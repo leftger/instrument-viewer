@@ -1,6 +1,7 @@
 mod app;
 mod cli;
 mod config;
+mod export;
 mod scpi;
 mod waveform;
 mod worker;

@@ -32,7 +32,8 @@ nc -z -v 169.254.6.252 4000
 cargo run --release
 ```
 
-**Connect**, then **Fetch**, or tick **Auto**. Auto captures every 2 seconds by
+**Connect**, then **Fetch**, or tick **Auto**. **CSV** / **JSON** save the traces
+currently on the plot (no extra traffic to the scope). Auto captures every 2 seconds by
 default; the spinner next to it sets the interval (0.5–30 s). The slow default is
 deliberate — see the quirks section. Auto switches itself off on any error rather
 than retrying into a struggling instrument.
@@ -97,6 +98,10 @@ cargo run --release -- acquisition \
 cargo run --release -- scpi query 'CH1:SCALE?'
 cargo run --release -- scpi write 'CH1:SCALE 0.5'
 cargo run --release -- autoset
+
+# Waveform export (one fetch, then disconnect). Format follows --out suffix.
+cargo run --release -- export --out capture.csv
+cargo run --release -- export --format json --out capture.json --channels CH1,CH2
 ```
 
 Run `cargo run --release -- <subcommand> --help` for the accepted values. Passive
@@ -181,5 +186,5 @@ from `HORizontal:RECOrdlength?`.
 
 ## Not implemented
 
-USB (USBTMC), digital-channel setup, non-edge triggers, RF/spectrum controls, and
-CSV export. Use the rear LAN port.
+USB (USBTMC), digital-channel setup, non-edge triggers, and RF/spectrum controls.
+Use the rear LAN port.

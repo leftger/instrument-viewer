@@ -85,6 +85,26 @@ impl ViewerApp {
         self.worker.send(Cmd::Fetch { channels });
     }
 
+    fn export_traces(&mut self, format: crate::export::ExportFormat) {
+        let name = format!("mdo-capture.{}", format.extension());
+        let mut dialog = rfd::FileDialog::new().set_file_name(&name);
+        dialog = match format {
+            crate::export::ExportFormat::Csv => dialog.add_filter("CSV", &["csv"]),
+            crate::export::ExportFormat::Json => dialog.add_filter("JSON", &["json"]),
+        };
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        match crate::export::write_file(&path, &self.traces, self.idn.as_deref(), format) {
+            Ok(()) => {
+                self.status = format!("Wrote {}", path.display());
+            }
+            Err(e) => {
+                self.status = format!("Export failed: {e}");
+            }
+        }
+    }
+
     fn pump(&mut self, now: f64) {
         while let Some(msg) = self.worker.try_recv() {
             match msg {
@@ -209,6 +229,21 @@ impl eframe::App for ViewerApp {
                 if ui.button("Demo").clicked() {
                     self.traces = self.selected().iter().map(|c| demo_trace(c)).collect();
                     self.status = "Demo waveform (no instrument).".into();
+                }
+
+                if ui
+                    .add_enabled(!self.traces.is_empty(), egui::Button::new("CSV"))
+                    .on_hover_text("Save the plotted traces as CSV")
+                    .clicked()
+                {
+                    self.export_traces(crate::export::ExportFormat::Csv);
+                }
+                if ui
+                    .add_enabled(!self.traces.is_empty(), egui::Button::new("JSON"))
+                    .on_hover_text("Save the plotted traces as JSON")
+                    .clicked()
+                {
+                    self.export_traces(crate::export::ExportFormat::Json);
                 }
 
                 if self.pending {

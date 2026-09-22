@@ -4,7 +4,9 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::config::{apply_section, read_config, ConfigSection};
+use crate::export::{self, ExportFormat};
 use crate::scpi::ScpiSession;
+use crate::waveform::fetch_channel;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -38,6 +40,18 @@ pub enum Command {
     Trigger(TriggerArgs),
     /// Configure acquisition mode and run state.
     Acquisition(AcquisitionArgs),
+    /// Fetch the current waveform(s) and write CSV or JSON.
+    Export {
+        /// csv or json (taken from --out suffix when omitted).
+        #[arg(long, value_enum)]
+        format: Option<ExportKind>,
+        /// Destination file. Writes to stdout if omitted.
+        #[arg(short, long)]
+        out: Option<std::path::PathBuf>,
+        /// Channels to capture. Defaults to those enabled on the instrument.
+        #[arg(long, value_delimiter = ',')]
+        channels: Vec<String>,
+    },
     /// Run the scope's built-in autoset.
     Autoset,
     /// Drive the GUI's worker thread headlessly to reproduce connect problems.
@@ -54,6 +68,12 @@ pub enum Command {
         #[arg(long)]
         reconnect: bool,
     },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ExportKind {
+    Csv,
+    Json,
 }
 
 #[derive(Subcommand, Debug)]
@@ -229,6 +249,47 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                 c.acquisition.mode, c.acquisition.stop_after, c.acquisition.running
             );
         }
+        Command::Export {
+            format,
+            out,
+            channels,
+        } => {
+            let format = resolve_format(*format, out.as_deref())?;
+            let channels = if channels.is_empty() {
+                let config = read_config(&mut session)?;
+                let enabled: Vec<String> = (0..4)
+                    .filter(|&i| config.channels[i].enabled)
+                    .map(|i| format!("CH{}", i + 1))
+                    .collect();
+                if enabled.is_empty() {
+                    vec!["CH1".into()]
+                } else {
+                    enabled
+                }
+            } else {
+                channels
+                    .iter()
+                    .map(|c| c.trim().to_ascii_uppercase())
+                    .collect()
+            };
+            let mut traces = Vec::new();
+            for ch in &channels {
+                traces.push(fetch_channel(&mut session, ch)?);
+            }
+            let body = export::render(&traces, Some(&idn), format);
+            match out {
+                Some(path) => {
+                    std::fs::write(path, body)?;
+                    println!(
+                        "wrote {} ({:?}, {} channel(s))",
+                        path.display(),
+                        format,
+                        traces.len()
+                    );
+                }
+                None => print!("{body}"),
+            }
+        }
         Command::Scpi { action } => match action {
             ScpiAction::Query { command } => println!("{}", session.query(command)?),
             ScpiAction::Write { command } => {
@@ -347,6 +408,25 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         Command::Selftest { .. } => unreachable!("selftest is dispatched by main"),
     }
     Ok(())
+}
+
+fn resolve_format(
+    format: Option<ExportKind>,
+    out: Option<&std::path::Path>,
+) -> Result<ExportFormat, Box<dyn Error>> {
+    if let Some(kind) = format {
+        return Ok(match kind {
+            ExportKind::Csv => ExportFormat::Csv,
+            ExportKind::Json => ExportFormat::Json,
+        });
+    }
+    match out.and_then(|p| p.extension()?.to_str()) {
+        Some("json") => Ok(ExportFormat::Json),
+        Some("csv") | None => Ok(ExportFormat::Csv),
+        Some(other) => {
+            Err(format!("unknown export format '.{other}'; use --format csv|json").into())
+        }
+    }
 }
 
 /// Exercise the same worker the GUI drives, so failures can be reproduced
