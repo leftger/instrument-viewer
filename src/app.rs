@@ -407,8 +407,23 @@ impl eframe::App for ViewerApp {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
 
+        // In macOS fullscreen, clicks in the top ~20 px of the window report the
+        // wrong coordinates, so widgets there cannot be hit even though the app
+        // keeps rendering. The window has to be created hidden to avoid a white
+        // flash on startup, and that is what triggers it; there is no fix
+        // upstream yet. Keep the toolbar clear of that band.
+        // https://github.com/rust-windowing/winit/issues/4295
+        // https://github.com/emilk/egui/pull/7281
+        let dead_band = if cfg!(target_os = "macos")
+            && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+        {
+            28.0
+        } else {
+            0.0
+        };
+
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(4.0 + dead_band);
             ui.horizontal_wrapped(|ui| {
                 let connected = self.idn.is_some();
                 ui.add_enabled_ui(!connected, |ui| {
