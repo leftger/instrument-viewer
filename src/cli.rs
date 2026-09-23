@@ -6,7 +6,6 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::config::{apply_section, read_config, ConfigSection};
 use crate::export::{self, ExportFormat};
 use crate::scpi::ScpiSession;
-use crate::waveform::fetch_channel;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -14,7 +13,7 @@ pub struct Cli {
     /// Oscilloscope hostname or IP address.
     #[arg(long, default_value = "169.254.6.252", global = true)]
     pub host: String,
-    /// Raw SCPI socket-server port.
+    /// Raw SCPI socket-server port. Tektronix MDO3000 uses 4000, Rigol DHO900 uses 5555.
     #[arg(long, default_value_t = 4000, global = true)]
     pub port: u16,
     #[command(subcommand)]
@@ -54,7 +53,7 @@ pub enum Command {
         /// Write a column per channel (`t,CH1,CH2,…`) instead of long-form rows.
         #[arg(long)]
         wide: bool,
-        /// Arm STOPAFTER SEQUENCE, wait for complete, then fetch.
+        /// Arm one acquisition, wait for completion, then fetch.
         #[arg(long)]
         sequence: bool,
     },
@@ -217,11 +216,14 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         let _ = session.resync();
         idn = session.query("*IDN?")?;
     }
+    let backend = crate::backend::from_idn(&idn);
+    session.set_preamble(backend.preamble())?;
+    let backend = backend.as_ref();
 
     match command {
         Command::Gui => unreachable!("GUI is dispatched by main"),
         Command::Get => {
-            let c = read_config(&mut session)?;
+            let c = read_config(&mut session, backend)?;
             println!("{idn}");
             for (i, ch) in c.channels.iter().enumerate() {
                 println!(
@@ -263,7 +265,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             sequence,
         } => {
             let format = resolve_format(*format, out.as_deref())?;
-            let config = read_config(&mut session)?;
+            let config = read_config(&mut session, backend)?;
             let channels = if channels.is_empty() {
                 let enabled: Vec<String> = (0..4)
                     .filter(|&i| config.channels[i].enabled)
@@ -281,11 +283,11 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                     .collect()
             };
             if *sequence {
-                crate::acquire::wait_sequence(&mut session, Duration::from_secs(30))?;
+                backend.wait_sequence(&mut session, Duration::from_secs(30))?;
             }
             let mut traces = Vec::new();
             for ch in &channels {
-                traces.push(fetch_channel(&mut session, ch)?);
+                traces.push(backend.fetch_channel(&mut session, ch)?);
             }
             let body = export::render(&export::ExportOptions {
                 traces: &traces,
@@ -317,7 +319,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             }
         },
         Command::Channel(args) => {
-            let mut c = read_config(&mut session)?;
+            let mut c = read_config(&mut session, backend)?;
             let ch = &mut c.channels[args.channel - 1];
             if let Some(v) = args.enabled {
                 ch.enabled = v;
@@ -355,12 +357,13 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             }
             apply_section(
                 &mut session,
+                backend,
                 &ConfigSection::Channel(args.channel - 1, ch.clone()),
             )?;
             println!("CH{} settings applied", args.channel);
         }
         Command::Horizontal(args) => {
-            let mut c = read_config(&mut session)?;
+            let mut c = read_config(&mut session, backend)?;
             if let Some(v) = args.scale {
                 c.horizontal.scale = v;
             }
@@ -370,11 +373,15 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.record_length {
                 c.horizontal.record_length = v;
             }
-            apply_section(&mut session, &ConfigSection::Horizontal(c.horizontal))?;
+            apply_section(
+                &mut session,
+                backend,
+                &ConfigSection::Horizontal(c.horizontal),
+            )?;
             println!("horizontal settings applied");
         }
         Command::Trigger(args) => {
-            let mut c = read_config(&mut session)?;
+            let mut c = read_config(&mut session, backend)?;
             if let Some(v) = args.mode {
                 c.trigger.mode = match v {
                     TriggerMode::Auto => "AUTO",
@@ -399,11 +406,11 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.level {
                 c.trigger.level = v;
             }
-            apply_section(&mut session, &ConfigSection::Trigger(c.trigger))?;
+            apply_section(&mut session, backend, &ConfigSection::Trigger(c.trigger))?;
             println!("edge-trigger settings applied");
         }
         Command::Acquisition(args) => {
-            let mut c = read_config(&mut session)?;
+            let mut c = read_config(&mut session, backend)?;
             if let Some(v) = args.mode {
                 c.acquisition.mode = acquisition_mode(v).into();
             }
@@ -417,11 +424,15 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.running {
                 c.acquisition.running = v;
             }
-            apply_section(&mut session, &ConfigSection::Acquisition(c.acquisition))?;
+            apply_section(
+                &mut session,
+                backend,
+                &ConfigSection::Acquisition(c.acquisition),
+            )?;
             println!("acquisition settings applied");
         }
         Command::Autoset => {
-            session.write("AUTOSET EXECUTE")?;
+            backend.autoset(&mut session)?;
             println!("autoset started");
         }
         Command::Selftest { .. } => unreachable!("selftest is dispatched by main"),

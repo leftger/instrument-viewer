@@ -476,7 +476,7 @@ impl eframe::App for ViewerApp {
                     }
                     if ui
                         .button("Sequence")
-                        .on_hover_text("STOPAFTER SEQUENCE, wait, then fetch")
+                        .on_hover_text("Arm one acquisition, wait, then fetch")
                         .clicked()
                     {
                         self.request_sequence_fetch();

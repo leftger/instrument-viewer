@@ -1,13 +1,15 @@
-mod acquire;
 mod app;
+mod backend;
 mod cli;
 mod config;
 mod export;
 mod measure;
 mod plotdata;
 mod prefs;
+mod rigol;
 mod scpi;
 mod stack;
+mod tek;
 mod waveform;
 mod worker;
 

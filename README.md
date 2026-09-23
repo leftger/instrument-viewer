@@ -1,10 +1,14 @@
 # mdo-viewer
 
-Rust GUI that pulls analog traces from a Tektronix **MDO3000 / MDO3024** over SCPI TCP and plots them.
+Rust GUI that pulls analog traces from Tektronix **MDO3000** and Rigol
+**DHO900** oscilloscopes over SCPI TCP and plots them.
 
-Verified against `TEKTRONIX,MDO3024,B020857,CF:91.1CT FV:v1.30` at 169.254.6.252.
+Verified against a Tektronix MDO3024 (firmware v1.30) and a Rigol DHO924S
+(firmware 00.01.05). The backend is selected automatically from `*IDN?`.
 
 ## Scope setup
+
+### Tektronix MDO3000
 
 1. Ethernet to the Mac. A direct cable is fine — both ends self-assign link-local
    `169.254.x.x` addresses. There is **no DHCP server** on that cable.
@@ -26,14 +30,28 @@ ping -c 3 169.254.6.252
 nc -z -v 169.254.6.252 4000
 ```
 
+### Rigol DHO900
+
+Connect the scope to the same network as the Mac (or use a direct Ethernet
+connection), note its IP under the LAN settings, and use raw SCPI port **5555**.
+The scope does not listen on the Tektronix default port 4000.
+
+```bash
+ping -c 3 <scope-ip>
+nc -z -v <scope-ip> 5555
+cargo run --release -- --host <scope-ip> --port 5555
+```
+
+The GUI remembers the host and port after they are entered once.
+
 ## Run
 
 ```bash
 cargo run --release
 ```
 
-**Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm `STOPAFTER SEQUENCE`,
-wait for the acquisition to complete, then pull the curve). **CSV** / **JSON** / **PNG**
+**Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm one acquisition,
+wait for it to complete, then pull the curve). **CSV** / **JSON** / **PNG**
 save the traces already on the plot (JSON includes measurements and a settings
 snapshot; **Wide** writes `t,CH1,CH2,…`). **Cursors**: left-click sets A, right-click
 or Shift-click sets B; the bar under the plot shows Δt and 1/Δt.
@@ -142,7 +160,10 @@ probe attenuation is converted to SCPI gain (`10x` → `PROBE:GAIN 0.1`).
 
 ## Protocol
 
-No NI-VISA or TekVISA. Plain TCP client:
+No NI-VISA, TekVISA, or USBTMC. The app uses a plain TCP client and selects an
+instrument backend after `*IDN?`.
+
+Tektronix transfer:
 
 ```
 *CLS
@@ -163,7 +184,26 @@ Scaling, with 16-bit big-endian samples:
 
 A full 10,000-point channel takes about 110 ms end to end.
 
-## Instrument quirks this works around
+Rigol transfer:
+
+```
+:WAV:SOUR CHAN1
+:WAV:FORM WORD
+:WAV:MODE NORM|RAW
+:WAV:PRE?
+:WAV:DATA?
+```
+
+Rigol WORD samples are unsigned little-endian:
+
+- `t = XORIGIN + XINCREMENT * (i - XREFERENCE)`
+- `V = (raw - YORIGIN - YREFERENCE) * YINCREMENT`
+
+`NORM` returns the 1,000 on-screen points while the scope is running. After a
+single acquisition stops, `RAW` returns the full acquisition memory; long
+records are transferred in windows.
+
+## Tektronix instrument quirks this works around
 
 These are properties of the scope, not the app. They are the reason the code is
 shaped the way it is.
@@ -216,6 +256,20 @@ one ~44 ms round trip.
 **Out-of-range `DATA:STOP` is silently fatal.** `DATA:STOP 2000000` against a
 10,000-point record stops the scope responding rather than clamping. Always set it
 from `HORizontal:RECOrdlength?`.
+
+## Rigol DHO900 notes
+
+The DHO900 firmware accepts much of the Tektronix command vocabulary, but not
+waveform transfer, channel display, or source-qualified trigger-level commands.
+Those operations use Rigol-native SCPI through the Rigol backend.
+
+`ACQUIRE:STOPAFTER SEQUENCE` is accepted and reads back successfully but does
+not stop the DHO900. The Sequence button therefore uses native `:SING` and polls
+`:TRIG:STAT?` for `STOP`.
+
+The DHO900 inputs are fixed at 1 MΩ. Attempts to apply 50 Ω termination return a
+clear unsupported-setting error. Its bandwidth control is an OFF/20 MHz limit,
+which the GUI presents as full instrument bandwidth or 20 MHz.
 
 ## Not implemented
 

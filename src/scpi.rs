@@ -18,6 +18,8 @@ pub enum ScpiError {
     Addr(String),
     #[error("invalid response: {0}")]
     Parse(String),
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 /// Log the SCPI exchange to stderr when `MDO_TRACE` is set.
@@ -29,7 +31,8 @@ fn trace(msg: impl FnOnce() -> String) {
     }
 }
 
-/// Raw TCP SCPI session against the scope Socket Server (protocol None, default port 4000).
+/// Raw TCP SCPI session against the scope's socket server (Tektronix: protocol
+/// None, port 4000; Rigol DHO900: port 5555).
 ///
 /// The session is long-lived on purpose. The instrument keeps a single output
 /// queue that survives a TCP disconnect, so abandoning an unread response
@@ -39,6 +42,7 @@ pub struct ScpiSession {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
     line_buf: Vec<u8>,
+    preamble: Vec<String>,
 }
 
 impl ScpiSession {
@@ -58,9 +62,21 @@ impl ScpiSession {
             writer: stream.try_clone()?,
             reader: BufReader::new(stream),
             line_buf: Vec::with_capacity(64),
+            preamble: Vec::new(),
         };
         session.resync()?;
         Ok(session)
+    }
+
+    /// Commands re-sent on every `resync`, supplied by the backend once the
+    /// instrument has identified itself.
+    ///
+    /// Connecting has to come before identifying, so this cannot be known when
+    /// the session is built. A Rigol answers the Tektronix setup commands with
+    /// `-100,"Command err"`, which is harmless but pointless.
+    pub fn set_preamble(&mut self, commands: Vec<String>) -> Result<(), ScpiError> {
+        self.preamble = commands;
+        self.resync()
     }
 
     /// Clear the instrument's status and discard anything still sitting in its
@@ -68,8 +84,9 @@ impl ScpiSession {
     pub fn resync(&mut self) -> Result<(), ScpiError> {
         self.drain();
         self.write("*CLS")?;
-        self.write("HEADER OFF")?;
-        self.write("VERBOSE OFF")?;
+        for cmd in self.preamble.clone() {
+            self.write(&cmd)?;
+        }
         std::thread::sleep(Duration::from_millis(50));
         self.drain();
         Ok(())

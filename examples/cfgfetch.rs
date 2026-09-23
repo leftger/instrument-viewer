@@ -7,11 +7,20 @@ mod scpi;
 #[path = "../src/waveform.rs"]
 mod waveform;
 
-// config.rs refers to `crate::scpi`, which resolves to the module above
-// because an example's crate root is this file.
+// These refer to each other as `crate::<module>`, which resolves to the modules
+// declared here because an example's crate root is this file.
+#[allow(dead_code, unused_imports)]
+#[path = "../src/backend.rs"]
+mod backend;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/config.rs"]
 mod config;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/rigol.rs"]
+mod rigol;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/tek.rs"]
+mod tek;
 
 use scpi::ScpiSession;
 
@@ -25,13 +34,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(8);
 
     let mut s = ScpiSession::connect(&addr, std::time::Duration::from_secs(6))?;
-    println!("IDN: {}", s.query("*IDN?")?);
+    let idn = s.query("*IDN?")?;
+    println!("IDN: {idn}");
+    let backend = backend::from_idn(&idn);
+    s.set_preamble(backend.preamble())?;
 
     for i in 0..cycles {
         let t = std::time::Instant::now();
-        let cfg = config::read_config(&mut s)?;
+        let cfg = config::read_config(&mut s, backend.as_ref())?;
         let tc = t.elapsed();
-        let trace = waveform::fetch_channel(&mut s, "CH1")?;
+        let trace = backend.fetch_channel(&mut s, "CH1")?;
         println!(
             "cycle {i}: cfg {:?} fetch {:?} pts={} rl={}",
             tc,

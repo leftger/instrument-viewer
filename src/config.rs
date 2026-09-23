@@ -1,3 +1,4 @@
+use crate::backend::Backend;
 use crate::scpi::{ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
@@ -53,12 +54,15 @@ pub enum ConfigSection {
     Acquisition(AcquisitionConfig),
 }
 
-pub fn read_config(session: &mut ScpiSession) -> Result<InstrumentConfig, ScpiError> {
+pub fn read_config(
+    session: &mut ScpiSession,
+    backend: &dyn Backend,
+) -> Result<InstrumentConfig, ScpiError> {
     let channels = [
-        read_channel(session, 1)?,
-        read_channel(session, 2)?,
-        read_channel(session, 3)?,
-        read_channel(session, 4)?,
+        read_channel(session, backend, 1)?,
+        read_channel(session, backend, 2)?,
+        read_channel(session, backend, 3)?,
+        read_channel(session, backend, 4)?,
     ];
 
     let horizontal = HorizontalConfig {
@@ -73,7 +77,7 @@ pub fn read_config(session: &mut ScpiSession) -> Result<InstrumentConfig, ScpiEr
         source: source.clone(),
         slope: clean_enum(&session.query("TRIGGER:A:EDGE:SLOPE?")?),
         coupling: clean_enum(&session.query("TRIGGER:A:EDGE:COUPLING?")?),
-        level: query_f64(session, &format!("TRIGGER:A:LEVEL:{source}?"))?,
+        level: backend.trigger_level(session, &source)?,
     };
 
     let acquisition = AcquisitionConfig {
@@ -90,33 +94,38 @@ pub fn read_config(session: &mut ScpiSession) -> Result<InstrumentConfig, ScpiEr
     })
 }
 
-fn read_channel(session: &mut ScpiSession, number: usize) -> Result<ChannelConfig, ScpiError> {
+fn read_channel(
+    session: &mut ScpiSession,
+    backend: &dyn Backend,
+    number: usize,
+) -> Result<ChannelConfig, ScpiError> {
     Ok(ChannelConfig {
-        enabled: query_bool(session, &format!("SELECT:CH{number}?"))?,
+        enabled: backend.channel_enabled(session, number)?,
         scale: query_f64(session, &format!("CH{number}:SCALE?"))?,
         position: query_f64(session, &format!("CH{number}:POSITION?"))?,
         offset: query_f64(session, &format!("CH{number}:OFFSET?"))?,
         coupling: clean_enum(&session.query(&format!("CH{number}:COUPLING?"))?),
-        termination_ohms: query_f64(session, &format!("CH{number}:TERMINATION?"))?,
-        bandwidth_hz: query_f64(session, &format!("CH{number}:BANDWIDTH?"))?,
+        termination_ohms: backend.termination_ohms(session, number)?,
+        bandwidth_hz: backend.bandwidth_hz(session, number)?,
         probe_gain: query_f64(session, &format!("CH{number}:PROBE:GAIN?"))?,
-        probe_type: session
-            .query(&format!("CH{number}:PROBE:ID:TYPE?"))?
-            .trim_matches('"')
-            .to_string(),
+        probe_type: backend.probe_type(session, number)?,
     })
 }
 
-pub fn apply_section(session: &mut ScpiSession, section: &ConfigSection) -> Result<(), ScpiError> {
+pub fn apply_section(
+    session: &mut ScpiSession,
+    backend: &dyn Backend,
+    section: &ConfigSection,
+) -> Result<(), ScpiError> {
     match section {
         ConfigSection::Channel(index, ch) => {
             let n = index + 1;
             // Probe gain changes the engineering units of scale/offset, so set it first.
             session.write(&format!("CH{n}:PROBE:GAIN {}", ch.probe_gain))?;
-            session.write(&format!("SELECT:CH{n} {}", on_off(ch.enabled)))?;
+            backend.set_channel_enabled(session, n, ch.enabled)?;
             session.write(&format!("CH{n}:COUPLING {}", ch.coupling))?;
-            session.write(&format!("CH{n}:TERMINATION {}", ch.termination_ohms))?;
-            session.write(&format!("CH{n}:BANDWIDTH {}", ch.bandwidth_hz))?;
+            backend.set_termination_ohms(session, n, ch.termination_ohms)?;
+            backend.set_bandwidth_hz(session, n, ch.bandwidth_hz)?;
             session.write(&format!("CH{n}:SCALE {}", ch.scale))?;
             session.write(&format!("CH{n}:POSITION {}", ch.position))?;
             session.write(&format!("CH{n}:OFFSET {}", ch.offset))?;
@@ -132,12 +141,10 @@ pub fn apply_section(session: &mut ScpiSession, section: &ConfigSection) -> Resu
             session.write(&format!("TRIGGER:A:EDGE:SOURCE {}", t.source))?;
             session.write(&format!("TRIGGER:A:EDGE:SLOPE {}", t.slope))?;
             session.write(&format!("TRIGGER:A:EDGE:COUPLING {}", t.coupling))?;
-            session.write(&format!("TRIGGER:A:LEVEL:{} {}", t.source, t.level))?;
+            backend.set_trigger_level(session, &t.source, t.level)?;
         }
         ConfigSection::Acquisition(a) => {
-            session.write(&format!("ACQUIRE:MODE {}", a.mode))?;
-            session.write(&format!("ACQUIRE:STOPAFTER {}", a.stop_after))?;
-            session.write(&format!("ACQUIRE:STATE {}", on_off(a.running)))?;
+            backend.apply_acquisition(session, &a.mode, &a.stop_after, a.running)?;
         }
     }
     // Wait until all preceding setters have been processed before reporting success.
@@ -155,12 +162,24 @@ pub fn query_f64(session: &mut ScpiSession, command: &str) -> Result<f64, ScpiEr
 
 fn query_u64(session: &mut ScpiSession, command: &str) -> Result<u64, ScpiError> {
     let response = session.query(command)?;
-    response
-        .parse()
-        .map_err(|_| ScpiError::Parse(format!("{command} returned {response:?}")))
+    parse_count(&response)
+        .ok_or_else(|| ScpiError::Parse(format!("{command} returned {response:?}")))
 }
 
-fn query_bool(session: &mut ScpiSession, command: &str) -> Result<bool, ScpiError> {
+/// A Tektronix reports a record length as `10000`, a Rigol as `1.0000E+04`.
+fn parse_count(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if let Ok(value) = text.parse::<u64>() {
+        return Some(value);
+    }
+    let value = text.parse::<f64>().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(value.round() as u64)
+}
+
+pub fn query_bool(session: &mut ScpiSession, command: &str) -> Result<bool, ScpiError> {
     let response = clean_enum(&session.query(command)?);
     match response.as_str() {
         "1" | "ON" | "RUN" => Ok(true),
@@ -193,10 +212,23 @@ fn clean_enum(value: &str) -> String {
     .to_string()
 }
 
-fn on_off(value: bool) -> &'static str {
-    if value {
-        "ON"
-    } else {
-        "OFF"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_and_exponent_counts() {
+        assert_eq!(parse_count("10000"), Some(10_000));
+        assert_eq!(parse_count("1.0000E+04"), Some(10_000));
+        assert_eq!(parse_count(" 1.0000E+03 "), Some(1_000));
+        assert_eq!(parse_count("10000000"), Some(10_000_000));
+    }
+
+    #[test]
+    fn rejects_non_counts() {
+        assert_eq!(parse_count("MEG"), None);
+        assert_eq!(parse_count(""), None);
+        assert_eq!(parse_count("-1"), None);
+        assert_eq!(parse_count("inf"), None);
     }
 }
