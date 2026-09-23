@@ -1,5 +1,5 @@
 use crate::backend::{Backend, InstrumentCapabilities};
-use crate::scpi::{ScpiError, ScpiSession};
+use crate::scpi::{parse_bool, parse_character, parse_count, parse_f64, ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
 pub struct ChannelConfig {
@@ -322,10 +322,7 @@ pub fn apply_section(
 
 pub fn query_f64(session: &mut ScpiSession, command: &str) -> Result<f64, ScpiError> {
     let response = session.query(command)?;
-    response
-        .trim_matches('"')
-        .parse()
-        .map_err(|_| ScpiError::Parse(format!("{command} returned {response:?}")))
+    parse_f64(&response).map_err(|_| ScpiError::Parse(format!("{command} returned {response:?}")))
 }
 
 fn query_u64(session: &mut ScpiSession, command: &str) -> Result<u64, ScpiError> {
@@ -334,30 +331,17 @@ fn query_u64(session: &mut ScpiSession, command: &str) -> Result<u64, ScpiError>
         .ok_or_else(|| ScpiError::Parse(format!("{command} returned {response:?}")))
 }
 
-/// A Tektronix reports a record length as `10000`, a Rigol as `1.0000E+04`.
-fn parse_count(text: &str) -> Option<u64> {
-    let text = text.trim();
-    if let Ok(value) = text.parse::<u64>() {
-        return Some(value);
-    }
-    let value = text.parse::<f64>().ok()?;
-    if !value.is_finite() || value < 0.0 {
-        return None;
-    }
-    Some(value.round() as u64)
-}
-
 pub fn query_bool(session: &mut ScpiSession, command: &str) -> Result<bool, ScpiError> {
-    let response = clean_enum(&session.query(command)?);
-    match response.as_str() {
+    let response = session.query(command)?;
+    parse_bool(&response).or_else(|_| match clean_enum(&response).as_str() {
         "1" | "ON" | "RUN" => Ok(true),
         "0" | "OFF" | "STOP" => Ok(false),
         _ => Err(ScpiError::Parse(format!("{command} returned {response:?}"))),
-    }
+    })
 }
 
 fn clean_enum(value: &str) -> String {
-    let value = value.trim().trim_matches('"').to_ascii_uppercase();
+    let value = parse_character(value);
     match value.as_str() {
         "AUT" => "AUTO",
         "NORM" => "NORMAL",
@@ -375,7 +359,7 @@ fn clean_enum(value: &str) -> String {
         "HFREJ" => "HFREJ",
         "LFREJ" => "LFREJ",
         "NOISER" => "NOISEREJ",
-        _ => &value,
+        other => other,
     }
     .to_string()
 }

@@ -12,4 +12,5 @@ eframe = { version = "0.32", features = ["wgpu"] }
 egui_plot = "0.33"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
+scpi = { version = "1", default-features = false, features = ["std"] }
 thiserror = "2"

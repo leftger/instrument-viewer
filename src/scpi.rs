@@ -1,7 +1,9 @@
+use std::convert::TryFrom;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+use scpi::parser::tokenizer::{Token, Tokenizer};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,6 +27,216 @@ pub enum ScpiError {
 impl ScpiError {
     pub fn is_connection_refused(&self) -> bool {
         matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::ConnectionRefused)
+    }
+}
+
+/// One IEEE 488.2 program-message unit, as split by the `scpi` tokenizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramUnit {
+    pub query: bool,
+    pub text: String,
+}
+
+/// Split a program message on `;` using IEEE 488.2 header/string/block rules.
+pub fn parse_program(input: &str) -> Result<Vec<ProgramUnit>, ScpiError> {
+    let bytes = input.as_bytes();
+    let mut tokenizer = Tokenizer::new(bytes);
+    let mut units = Vec::new();
+    let mut unit_start = 0usize;
+    let mut query = false;
+    let mut saw_header = false;
+
+    let pos = |t: &Tokenizer<'_>| bytes.len() - t.chars.as_slice().len();
+
+    loop {
+        let before = pos(&tokenizer);
+        let Some(token) = tokenizer.next() else {
+            break;
+        };
+        let token = token.map_err(|e| ScpiError::Parse(format!("{e:?}: {input:?}")))?;
+        match token {
+            Token::ProgramMnemonic(_) => saw_header = true,
+            Token::HeaderQuerySuffix => query = true,
+            Token::ProgramMessageUnitSeparator => {
+                push_unit(bytes, unit_start, before, query, saw_header, &mut units)?;
+                unit_start = pos(&tokenizer);
+                query = false;
+                saw_header = false;
+            }
+            _ => {}
+        }
+    }
+    push_unit(
+        bytes,
+        unit_start,
+        bytes.len(),
+        query,
+        saw_header,
+        &mut units,
+    )?;
+    if units.is_empty() {
+        return Err(ScpiError::Parse(format!("empty SCPI program {input:?}")));
+    }
+    Ok(units)
+}
+
+fn push_unit(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    query: bool,
+    saw_header: bool,
+    units: &mut Vec<ProgramUnit>,
+) -> Result<(), ScpiError> {
+    let text = std::str::from_utf8(&bytes[start..end]).unwrap_or("").trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    if !saw_header {
+        return Err(ScpiError::Parse(format!(
+            "SCPI unit has no header: {text:?}"
+        )));
+    }
+    units.push(ProgramUnit {
+        query,
+        text: text.to_string(),
+    });
+    Ok(())
+}
+
+fn first_data_token(text: &str) -> Result<Token<'_>, ScpiError> {
+    let bytes = text.trim().as_bytes();
+    for token in Tokenizer::new_params(bytes) {
+        let token = token.map_err(|e| ScpiError::Parse(format!("{e:?}: {text:?}")))?;
+        if token.is_data() {
+            return Ok(token);
+        }
+    }
+    Err(ScpiError::Parse(format!("no SCPI data in {text:?}")))
+}
+
+fn token_error(token: Token<'_>, text: &str) -> ScpiError {
+    ScpiError::Parse(format!("invalid SCPI data {text:?} ({token:?})"))
+}
+
+/// Parse a decimal or quoted numeric response (`1`, `1.0000E+04`, `"0.5"`).
+pub fn parse_f64(text: &str) -> Result<f64, ScpiError> {
+    match first_data_token(text)? {
+        Token::StringProgramData(inner) => {
+            let inner = std::str::from_utf8(inner).unwrap_or("");
+            parse_f64(inner)
+        }
+        token => f64::try_from(token).map_err(|_| token_error(token, text)),
+    }
+}
+
+/// Parse a count, accepting both integer and scientific-notation replies.
+pub fn parse_count(text: &str) -> Option<u64> {
+    let token = first_data_token(text).ok()?;
+    if let Ok(value) = u64::try_from(token) {
+        return Some(value);
+    }
+    let value = parse_f64(text).ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(value.round() as u64)
+}
+
+/// Boolean program data: `0`/`1`, `ON`/`OFF`, plus instrument `RUN`/`STOP`.
+pub fn parse_bool(text: &str) -> Result<bool, ScpiError> {
+    let token = first_data_token(text)?;
+    match bool::try_from(token) {
+        Ok(value) => Ok(value),
+        Err(_) => match token {
+            Token::CharacterProgramData(s)
+                if s.eq_ignore_ascii_case(b"RUN") || s.eq_ignore_ascii_case(b"1") =>
+            {
+                Ok(true)
+            }
+            Token::CharacterProgramData(s)
+                if s.eq_ignore_ascii_case(b"STOP") || s.eq_ignore_ascii_case(b"0") =>
+            {
+                Ok(false)
+            }
+            _ => Err(token_error(token, text)),
+        },
+    }
+}
+
+/// Character or quoted string data, uppercased. Leaves numeric replies as digits.
+pub fn parse_character(text: &str) -> String {
+    let raw = match first_data_token(text) {
+        Ok(
+            Token::CharacterProgramData(s)
+            | Token::StringProgramData(s)
+            | Token::DecimalNumericProgramData(s),
+        ) => String::from_utf8_lossy(s).into_owned(),
+        _ => text.trim().trim_matches('"').to_string(),
+    };
+    raw.to_ascii_uppercase()
+}
+
+/// CLI SI value (`500mV`, `2us`, `20MHz`). Uses the SCPI numeric+suffix tokenizer.
+pub fn parse_si_value(input: &str) -> Result<f64, String> {
+    let ascii = input.replace('µ', "u");
+    let token = first_data_token(&ascii).map_err(|e| e.to_string())?;
+    match token {
+        Token::DecimalNumericProgramData(_) => {
+            f64::try_from(token).map_err(|_| format!("invalid SI value {input:?}"))
+        }
+        Token::DecimalNumericSuffixProgramData(num, suffix) => {
+            let value = f64::try_from(Token::DecimalNumericProgramData(num))
+                .map_err(|_| format!("invalid SI value {input:?}"))?;
+            let factor =
+                si_suffix_factor(suffix).ok_or_else(|| format!("invalid SI value {input:?}"))?;
+            Ok(value * factor)
+        }
+        _ => Err(format!("invalid SI value {input:?}")),
+    }
+}
+
+fn si_suffix_factor(suffix: &[u8]) -> Option<f64> {
+    let suffixes = [
+        (b"GHz" as &[u8], 1e9),
+        (b"MHz", 1e6),
+        (b"kHz", 1e3),
+        (b"Hz", 1.0),
+        (b"mV", 1e-3),
+        (b"uV", 1e-6),
+        (b"V", 1.0),
+        (b"ms", 1e-3),
+        (b"us", 1e-6),
+        (b"ns", 1e-9),
+        (b"ps", 1e-12),
+        (b"s", 1.0),
+    ];
+    suffixes
+        .iter()
+        .find(|(name, _)| *name == suffix)
+        .map(|(_, factor)| *factor)
+}
+
+/// CLI record length (`10000`, `10k`, `5M`).
+pub fn parse_record_length(input: &str) -> Result<u64, String> {
+    let token = first_data_token(input).map_err(|e| e.to_string())?;
+    match token {
+        Token::DecimalNumericProgramData(_) => {
+            u64::try_from(token).map_err(|_| format!("invalid record length {input:?}"))
+        }
+        Token::DecimalNumericSuffixProgramData(num, suffix) => {
+            let value = u64::try_from(Token::DecimalNumericProgramData(num))
+                .map_err(|_| format!("invalid record length {input:?}"))?;
+            let factor = match suffix {
+                b"k" | b"K" => 1_000,
+                b"m" | b"M" => 1_000_000,
+                _ => return Err(format!("invalid record length {input:?}")),
+            };
+            value
+                .checked_mul(factor)
+                .ok_or_else(|| format!("invalid record length {input:?}"))
+        }
+        _ => Err(format!("invalid record length {input:?}")),
     }
 }
 
@@ -122,6 +334,11 @@ impl ScpiSession {
         let _ = self.writer.set_nonblocking(false);
     }
 
+    /// Reject syntactically invalid program messages before they hit the socket.
+    pub fn validate_program(cmd: &str) -> Result<(), ScpiError> {
+        parse_program(cmd).map(|_| ())
+    }
+
     /// Send one command, terminator included, as a single write.
     ///
     /// The terminator must go out in the same segment as the command. With
@@ -129,6 +346,11 @@ impl ScpiSession {
     /// packet, and the socket server's parser stops responding after a few
     /// dozen such commands.
     pub fn write(&mut self, cmd: &str) -> Result<(), ScpiError> {
+        Self::validate_program(cmd)?;
+        self.write_raw(cmd)
+    }
+
+    fn write_raw(&mut self, cmd: &str) -> Result<(), ScpiError> {
         trace(|| format!("-> {cmd}"));
         self.line_buf.clear();
         self.line_buf.extend_from_slice(cmd.as_bytes());
@@ -139,7 +361,8 @@ impl ScpiSession {
     }
 
     pub fn query(&mut self, cmd: &str) -> Result<String, ScpiError> {
-        self.write(cmd)?;
+        Self::validate_program(cmd)?;
+        self.write_raw(cmd)?;
         // A leftover LF from a previous block or drain can yield an empty
         // line; skip those so the next query does not eat this command's reply.
         loop {
@@ -233,5 +456,82 @@ mod tests {
         assert!(refused.is_connection_refused());
         assert!(!timeout.is_connection_refused());
         assert!(!ScpiError::Timeout.is_connection_refused());
+    }
+
+    #[test]
+    fn splits_compound_program_messages() {
+        let units = parse_program("*CLS; CH1:SCALE 0.5; *IDN?").unwrap();
+        assert_eq!(
+            units,
+            vec![
+                ProgramUnit {
+                    query: false,
+                    text: "*CLS".into()
+                },
+                ProgramUnit {
+                    query: false,
+                    text: "CH1:SCALE 0.5".into()
+                },
+                ProgramUnit {
+                    query: true,
+                    text: "*IDN?".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_known_instrument_commands() {
+        for cmd in [
+            "*CLS",
+            "*IDN?",
+            "*OPC?",
+            "HEADER OFF",
+            "VERBOSE OFF",
+            "HORIZONTAL:RECORDLENGTH?",
+            "HORIZONTAL:SCALE?",
+            "WFMOutpre?",
+            "CURVE?",
+            "DATA:ENC RIBINARY",
+            "DATA:SOURCE CH1",
+            "TRIGGER:A:LEVEL:CH1 0.5",
+            "ACQUIRE:STOPAFTER SEQUENCE",
+            "AUTOSET EXECUTE",
+            ":CHAN1:DISP ON",
+            ":WAV:FORM WORD",
+            ":SING",
+        ] {
+            parse_program(cmd).unwrap_or_else(|e| panic!("{cmd}: {e}"));
+        }
+    }
+
+    #[test]
+    fn rejects_garbage_program() {
+        assert!(parse_program("not a command!!!").is_err());
+        assert!(parse_program("").is_err());
+    }
+
+    #[test]
+    fn parses_numeric_and_bool_responses() {
+        assert_eq!(parse_f64("1.0000E+04").unwrap(), 10_000.0);
+        assert_eq!(parse_f64("\"0.5\"").unwrap(), 0.5);
+        assert_eq!(parse_count("10000"), Some(10_000));
+        assert_eq!(parse_count("1.0000E+04"), Some(10_000));
+        assert_eq!(parse_count(" 1.0000E+03 "), Some(1_000));
+        assert_eq!(parse_count("MEG"), None);
+        assert_eq!(parse_count(""), None);
+        assert_eq!(parse_count("-1"), None);
+        assert_eq!(parse_count("inf"), None);
+        assert!(parse_bool("ON").unwrap());
+        assert!(!parse_bool("OFF").unwrap());
+        assert!(parse_bool("1").unwrap());
+        assert!(parse_bool("RUN").unwrap());
+        assert!(!parse_bool("STOP").unwrap());
+        assert_eq!(parse_character("\"dc\""), "DC");
+        assert_eq!(parse_si_value("500mV").unwrap(), 0.5);
+        assert_eq!(parse_si_value("2us").unwrap(), 2e-6);
+        assert_eq!(parse_si_value("20MHz").unwrap(), 20e6);
+        assert_eq!(parse_record_length("10k").unwrap(), 10_000);
+        assert_eq!(parse_record_length("5M").unwrap(), 5_000_000);
     }
 }

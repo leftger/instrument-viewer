@@ -642,56 +642,11 @@ fn acquisition_mode(value: AcquisitionMode) -> &'static str {
 }
 
 fn parse_si(input: &str) -> Result<f64, String> {
-    let s = input.trim();
-    if let Ok(value) = s.parse::<f64>() {
-        return Ok(value);
-    }
-
-    // Longest suffix first so `MHz` is not mistaken for `Hz`.
-    let suffixes = [
-        ("GHz", 1e9),
-        ("MHz", 1e6),
-        ("kHz", 1e3),
-        ("Hz", 1.0),
-        ("mV", 1e-3),
-        ("uV", 1e-6),
-        ("µV", 1e-6),
-        ("V", 1.0),
-        ("ms", 1e-3),
-        ("us", 1e-6),
-        ("µs", 1e-6),
-        ("ns", 1e-9),
-        ("ps", 1e-12),
-        ("s", 1.0),
-    ];
-    for (suffix, factor) in suffixes {
-        if let Some(number) = s.strip_suffix(suffix) {
-            return number
-                .trim()
-                .parse::<f64>()
-                .map(|v| v * factor)
-                .map_err(|_| format!("invalid value {input:?}"));
-        }
-    }
-    Err(format!("invalid SI value {input:?}"))
+    crate::scpi::parse_si_value(input)
 }
 
 fn parse_count(input: &str) -> Result<u64, String> {
-    if let Ok(value) = input.parse() {
-        return Ok(value);
-    }
-    let lower = input.trim().to_ascii_lowercase();
-    let (number, factor) = if let Some(n) = lower.strip_suffix('k') {
-        (n, 1_000)
-    } else if let Some(n) = lower.strip_suffix('m') {
-        (n, 1_000_000)
-    } else {
-        return Err(format!("invalid record length {input:?}"));
-    };
-    number
-        .parse::<u64>()
-        .map(|v| v * factor)
-        .map_err(|_| format!("invalid record length {input:?}"))
+    crate::scpi::parse_record_length(input)
 }
 
 fn parse_channel_number(input: &str) -> Result<usize, String> {
