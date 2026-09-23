@@ -59,18 +59,30 @@ pub fn decimate(points: &[[f64; 2]], target: usize) -> Vec<[f64; 2]> {
     out
 }
 
-/// How many points are worth drawing for a plot `width_px` wide.
+/// Reduce a trace to what a plot `width_px` wide can actually show.
 ///
-/// Scales with zoom so a magnified region keeps roughly two points per column
-/// even though the reduced series still covers the entire record.
-pub fn target_points(width_px: f64, full_span: f64, visible_span: f64, raw_len: usize) -> usize {
-    let columns = width_px.max(64.0);
-    let ratio = if visible_span > 0.0 && full_span > 0.0 {
-        (full_span / visible_span).clamp(1.0, 512.0)
-    } else {
-        1.0
-    };
-    ((columns * 2.0 * ratio) as usize).clamp(256, raw_len.max(256))
+/// With `clip` the series is first cut to the visible x-range, which bounds the
+/// drawn point count at roughly two per column no matter how far in the user
+/// zooms. Clipping must stay off while the plot is auto-fitting, because then
+/// the plot takes its bounds from these points and would shrink onto itself.
+pub fn prepare(
+    points: &[[f64; 2]],
+    x_min: f64,
+    x_max: f64,
+    width_px: f64,
+    clip: bool,
+) -> Vec<[f64; 2]> {
+    let target = ((width_px.max(64.0) * 2.0) as usize).max(256);
+    if !clip {
+        return decimate(points, target);
+    }
+    // One sample of margin each side so the line still enters from off-screen.
+    let lo = points.partition_point(|p| p[0] < x_min).saturating_sub(1);
+    let hi = (points.partition_point(|p| p[0] <= x_max) + 1).min(points.len());
+    match points.get(lo..hi) {
+        Some(slice) => decimate(slice, target),
+        None => decimate(points, target),
+    }
 }
 
 #[cfg(test)]
@@ -118,10 +130,29 @@ mod tests {
     }
 
     #[test]
-    fn target_scales_with_zoom() {
-        let wide = target_points(1000.0, 1.0, 1.0, 10_000);
-        let zoomed = target_points(1000.0, 1.0, 0.1, 10_000);
-        assert!(zoomed > wide);
-        assert!(zoomed <= 10_000);
+    fn clipping_bounds_the_drawn_count_when_zoomed_in() {
+        let p = ramp(10_000);
+        let all = prepare(&p, 0.0, 9_999.0, 1000.0, false);
+        let zoomed = prepare(&p, 4_000.0, 4_100.0, 1000.0, true);
+        assert!(all.len() <= 2_100, "len={}", all.len());
+        assert!(zoomed.len() <= 2_100, "len={}", zoomed.len());
+        // Only the visible window, not the whole record.
+        assert!(zoomed.first().unwrap()[0] >= 3_999.0);
+        assert!(zoomed.last().unwrap()[0] <= 4_101.0);
+    }
+
+    #[test]
+    fn unclipped_prepare_spans_the_record() {
+        let p = ramp(10_000);
+        let out = prepare(&p, 4_000.0, 4_100.0, 1000.0, false);
+        assert_eq!(out.first().unwrap()[0], 0.0);
+        assert_eq!(out.last().unwrap()[0], 9_999.0);
+    }
+
+    #[test]
+    fn panning_off_the_data_draws_nothing_expensive() {
+        let p = ramp(10_000);
+        let out = prepare(&p, 50_000.0, 60_000.0, 1000.0, true);
+        assert!(out.len() <= 2, "len={}", out.len());
     }
 }

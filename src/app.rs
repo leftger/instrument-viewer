@@ -28,7 +28,13 @@ pub struct ViewerApp {
     auto_interval: f64,
     /// A fetch is in flight; do not queue another or the requests pile up.
     pending: bool,
+    /// When `pending` was raised, so a lost reply cannot lock the UI forever.
+    pending_since: Option<f64>,
     last_fetch: f64,
+    /// Frame counter and last frame duration, shown so a stalled or merely slow
+    /// UI can be told apart.
+    frames: u64,
+    frame_ms: f32,
     /// UI clock time before which reconnecting is pointless, after a wedge.
     retry_at: f64,
     raw_command: String,
@@ -68,7 +74,10 @@ impl ViewerApp {
             auto: false,
             auto_interval: prefs.auto_interval,
             pending: false,
+            pending_since: None,
             last_fetch: 0.0,
+            frames: 0,
+            frame_ms: 0.0,
             retry_at: 0.0,
             raw_command: "*IDN?".into(),
             raw_response: String::new(),
@@ -300,6 +309,10 @@ impl ViewerApp {
                                  peaks are preserved and exports use full resolution.",
                             );
                     }
+                    // Liveness: if this keeps counting, the UI thread is alive
+                    // and any apparent freeze is elsewhere.
+                    ui.label(format!("frame {} · {:.0} ms", self.frames, self.frame_ms))
+                        .on_hover_text("Frame counter and frame time");
                 });
             });
             ui.add_space(2.0);
@@ -361,10 +374,28 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
+        self.frames += 1;
+        self.frame_ms = ctx.input(|i| i.unstable_dt) * 1000.0;
         self.pump(now);
         self.collect_screenshot(ctx);
 
-        if now < self.retry_at {
+        // A command whose reply never arrives must not strand the UI, so give
+        // up on it rather than leaving every button disabled.
+        if self.pending {
+            let started = *self.pending_since.get_or_insert(now);
+            if now - started > 20.0 {
+                self.pending = false;
+                self.pending_since = None;
+                self.status =
+                    "No reply after 20 s; releasing the UI. Disconnect and reconnect.".into();
+            }
+        } else {
+            self.pending_since = None;
+        }
+
+        // Heartbeat. Waking only on the worker's cross-thread repaint request
+        // leaves the window looking dead if that wakeup is ever missed.
+        if self.pending || self.idn.is_some() || now < self.retry_at {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
 
@@ -402,11 +433,10 @@ impl eframe::App for ViewerApp {
                         self.pending = true;
                         self.worker.send(Cmd::Connect { addr: self.addr() });
                     }
-                } else if ui
-                    .add_enabled(!self.pending, egui::Button::new("Disconnect"))
-                    .clicked()
-                {
-                    self.pending = true;
+                // Always live, even mid-command: this is the way out when the
+                // instrument stops answering.
+                } else if ui.button("Disconnect").clicked() {
+                    self.auto = false;
                     self.worker.send(Cmd::Disconnect);
                 }
 
@@ -566,19 +596,14 @@ impl eframe::App for ViewerApp {
                 .show(ui, |plot_ui| {
                     // Last frame's bounds; good enough to size this frame's detail.
                     let visible = plot_ui.plot_bounds();
-                    let visible_span = visible.max()[0] - visible.min()[0];
                     for trace in &self.traces {
-                        let full_span = match (trace.points.first(), trace.points.last()) {
-                            (Some(a), Some(b)) => b[0] - a[0],
-                            _ => 0.0,
-                        };
-                        let target = plotdata::target_points(
+                        let reduced = plotdata::prepare(
+                            &trace.points,
+                            visible.min()[0],
+                            visible.max()[0],
                             width_px,
-                            full_span,
-                            visible_span,
-                            trace.points.len(),
+                            !do_fit,
                         );
-                        let reduced = plotdata::decimate(&trace.points, target);
                         drawn += reduced.len();
                         plot_ui.line(Line::new(trace.channel.clone(), PlotPoints::from(reduced)));
                     }
