@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-eframe = "0.32"
+eframe = { version = "0.32", features = ["wgpu"] }
 egui_plot = "0.33"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"

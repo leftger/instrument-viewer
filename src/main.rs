@@ -39,6 +39,11 @@ fn run_gui(host: String, port: u16) -> eframe::Result<()> {
         prefs.port.parse().unwrap_or(port)
     };
     let options = eframe::NativeOptions {
+        // Metal rather than eframe's default OpenGL backend. Apple deprecated
+        // OpenGL, and on the green-button fullscreen transition the glow path
+        // stops driving the event loop: the window goes to its own Space and
+        // never paints or handles input again.
+        renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
             .with_title("MDO viewer"),
