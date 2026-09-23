@@ -1,7 +1,9 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::backend::{channel_number, Backend};
+use crate::backend::{
+    channel_number, AcquisitionStatus, Backend, InstrumentCapabilities, ValueChoice,
+};
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -65,6 +67,39 @@ impl Rigol {
 impl Backend for Rigol {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn capabilities(&self) -> InstrumentCapabilities {
+        InstrumentCapabilities {
+            channel_couplings: strings(&["DC", "AC", "GND"]),
+            terminations: vec![ValueChoice::new("1 MΩ (fixed)", 1e6)],
+            termination_writable: false,
+            bandwidths: vec![
+                ValueChoice::new("20 MHz", BANDWIDTH_LIMIT_HZ),
+                ValueChoice::new(
+                    format!("Full ({:.0} MHz)", self.full_bandwidth_hz / 1e6),
+                    self.full_bandwidth_hz,
+                ),
+            ],
+            record_lengths: vec![
+                1_000, 10_000, 100_000, 1_000_000, 10_000_000, 25_000_000, 50_000_000,
+            ],
+            trigger_modes: strings(&["AUTO", "NORMAL"]),
+            trigger_slopes: strings(&["RISE", "FALL", "EITHER"]),
+            trigger_couplings: strings(&["DC", "AC", "LFREJ", "HFREJ"]),
+            acquisition_modes: strings(&["SAMPLE", "PEAKDETECT", "AVERAGE", "ULTRA"]),
+            stop_after: strings(&["RUNSTOP", "SEQUENCE"]),
+            channel_hint: Some(
+                "DHO900 inputs are fixed at 1 MΩ; bandwidth is Full or 20 MHz.".into(),
+            ),
+            horizontal_hint: Some(
+                "Maximum memory is 50M with one channel, 25M with two, and 10M with all four."
+                    .into(),
+            ),
+            acquisition_hint: Some(
+                "Sequence uses the native :SING command; STOPAFTER alone is ineffective.".into(),
+            ),
+        }
     }
 
     fn channel_enabled(&self, s: &mut ScpiSession, n: usize) -> Result<bool, ScpiError> {
@@ -186,8 +221,16 @@ impl Backend for Rigol {
             ":WAV:MODE NORM"
         })?;
 
+        // After a chunked read, WAV:PRE? keeps reporting the final transfer
+        // window (for example 100k) rather than total acquisition memory.
+        // ACQ:MDEP? remains the authoritative RAW point count.
+        let raw_points = if raw_mode {
+            Some(query_point_count(s, ":ACQ:MDEP?")?)
+        } else {
+            None
+        };
         let pre = Preamble::query(s)?;
-        let raw = read_points(s, pre.points, raw_mode)?;
+        let raw = read_points(s, raw_points.unwrap_or(pre.points), raw_mode)?;
 
         let points = raw
             .as_chunks::<2>()
@@ -227,8 +270,47 @@ impl Backend for Rigol {
         }
     }
 
+    fn acquisition_status(&self, s: &mut ScpiSession) -> Result<AcquisitionStatus, ScpiError> {
+        let running = crate::config::query_bool(s, "ACQUIRE:STATE?")?;
+        let trigger = normalize_trigger_status(&s.query(":TRIG:STAT?")?);
+        Ok(AcquisitionStatus {
+            running,
+            display: trigger,
+        })
+    }
+
     fn autoset(&self, s: &mut ScpiSession) -> Result<(), ScpiError> {
         s.write(":AUT")
+    }
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
+fn query_point_count(s: &mut ScpiSession, command: &str) -> Result<usize, WaveformError> {
+    let response = s.query(command)?;
+    parse_point_count(command, &response)
+}
+
+fn parse_point_count(command: &str, response: &str) -> Result<usize, WaveformError> {
+    let points = response
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| WaveformError::Parse(format!("{command} returned {response:?}")))?;
+    if !points.is_finite() || points < 1.0 || points > usize::MAX as f64 {
+        return Err(WaveformError::Parse(format!(
+            "{command} returned invalid point count {response:?}"
+        )));
+    }
+    Ok(points.round() as usize)
+}
+
+fn normalize_trigger_status(value: &str) -> String {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "TRIGGERED" => "TD".into(),
+        "WAITING" => "WAIT".into(),
+        other => other.to_string(),
     }
 }
 
@@ -321,10 +403,20 @@ fn read_points(
         let end = (start + CHUNK_POINTS - 1).min(points);
         s.write(&format!(":WAV:STAR {start}"))?;
         s.write(&format!(":WAV:STOP {end}"))?;
+        // Without a round trip here the DHO900 can receive DATA? before it has
+        // applied the new window and then never answer. Tracing happened to
+        // mask this race by slowing the command stream.
+        let _ = s.query("*OPC?")?;
         let block = s.query_binary_block(":WAV:DATA?")?;
         expect(&block, (end - start + 1) * 2)?;
         out.extend_from_slice(&block);
         start = end + 1;
+        if start <= points {
+            // The socket returns before the scope is ready to accept the next
+            // window. A short inter-block pause prevents the following STAR
+            // command from being lost on large records.
+            thread::sleep(Duration::from_millis(20));
+        }
     }
     Ok(out)
 }
@@ -395,5 +487,23 @@ mod tests {
             Rigol::from_idn("RIGOL,DHO914S,X,1").full_bandwidth_hz,
             125e6
         );
+    }
+
+    #[test]
+    fn normalizes_trigger_status_for_display() {
+        assert_eq!(normalize_trigger_status("TD\n"), "TD");
+        assert_eq!(normalize_trigger_status("waiting"), "WAIT");
+        assert_eq!(normalize_trigger_status("Triggered"), "TD");
+        assert_eq!(normalize_trigger_status("STOP"), "STOP");
+    }
+
+    #[test]
+    fn parses_raw_memory_depth_in_scientific_notation() {
+        assert_eq!(
+            parse_point_count(":ACQ:MDEP?", "1.0000E+06").unwrap(),
+            1_000_000
+        );
+        assert!(parse_point_count(":ACQ:MDEP?", "0").is_err());
+        assert!(parse_point_count(":ACQ:MDEP?", "AUTO").is_err());
     }
 }

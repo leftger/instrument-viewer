@@ -3,6 +3,44 @@ use std::time::Duration;
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueChoice {
+    pub label: String,
+    pub value: f64,
+}
+
+impl ValueChoice {
+    pub fn new(label: impl Into<String>, value: f64) -> Self {
+        Self {
+            label: label.into(),
+            value,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstrumentCapabilities {
+    pub channel_couplings: Vec<String>,
+    pub terminations: Vec<ValueChoice>,
+    pub termination_writable: bool,
+    pub bandwidths: Vec<ValueChoice>,
+    pub record_lengths: Vec<u64>,
+    pub trigger_modes: Vec<String>,
+    pub trigger_slopes: Vec<String>,
+    pub trigger_couplings: Vec<String>,
+    pub acquisition_modes: Vec<String>,
+    pub stop_after: Vec<String>,
+    pub channel_hint: Option<String>,
+    pub horizontal_hint: Option<String>,
+    pub acquisition_hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcquisitionStatus {
+    pub running: bool,
+    pub display: String,
+}
+
 /// The instrument-specific half of the SCPI surface.
 ///
 /// A Rigol DHO900 answers a useful subset of the Tektronix command set —
@@ -13,6 +51,7 @@ use crate::waveform::{ChannelTrace, WaveformError};
 /// queue, so the difference surfaces as a read timeout rather than an error.
 pub trait Backend: Send {
     fn name(&self) -> &str;
+    fn capabilities(&self) -> InstrumentCapabilities;
 
     /// Commands to re-assert on every `ScpiSession::resync`.
     fn preamble(&self) -> Vec<String> {
@@ -64,6 +103,8 @@ pub trait Backend: Send {
     /// Arm a single acquisition and wait for it to complete.
     fn wait_sequence(&self, s: &mut ScpiSession, timeout: Duration) -> Result<(), ScpiError>;
 
+    fn acquisition_status(&self, s: &mut ScpiSession) -> Result<AcquisitionStatus, ScpiError>;
+
     fn autoset(&self, s: &mut ScpiSession) -> Result<(), ScpiError>;
 }
 
@@ -91,10 +132,13 @@ mod tests {
 
     #[test]
     fn selects_backend_by_vendor() {
-        assert_eq!(
-            from_idn("RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05").name(),
-            "Rigol DHO924S"
-        );
+        let rigol = from_idn("RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05");
+        assert_eq!(rigol.name(), "Rigol DHO924S");
+        let capabilities = rigol.capabilities();
+        assert!(!capabilities.termination_writable);
+        assert_eq!(capabilities.bandwidths[1].value, 250e6);
+        assert!(capabilities.record_lengths.contains(&50_000_000));
+
         assert_eq!(
             from_idn("TEKTRONIX,MDO3024,B020857,CF:91.1CT FV:v1.30").name(),
             "Tektronix"

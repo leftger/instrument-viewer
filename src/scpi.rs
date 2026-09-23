@@ -22,6 +22,12 @@ pub enum ScpiError {
     Unsupported(String),
 }
 
+impl ScpiError {
+    pub fn is_connection_refused(&self) -> bool {
+        matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::ConnectionRefused)
+    }
+}
+
 /// Log the SCPI exchange to stderr when `MDO_TRACE` is set.
 fn trace(msg: impl FnOnce() -> String) {
     use std::sync::OnceLock;
@@ -213,5 +219,19 @@ impl ScpiSession {
             }
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_only_connection_refused_errors() {
+        let refused = ScpiError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        let timeout = ScpiError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert!(refused.is_connection_refused());
+        assert!(!timeout.is_connection_refused());
+        assert!(!ScpiError::Timeout.is_connection_refused());
     }
 }

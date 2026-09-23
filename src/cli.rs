@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::config::{apply_section, read_config, ConfigSection};
+use crate::config::{
+    apply_section, include_current_values, read_config, validate_section, ConfigSection,
+};
 use crate::export::{self, ExportFormat};
 use crate::scpi::ScpiSession;
 
@@ -217,6 +219,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         idn = session.query("*IDN?")?;
     }
     let backend = crate::backend::from_idn(&idn);
+    let mut capabilities = backend.capabilities();
     session.set_preamble(backend.preamble())?;
     let backend = backend.as_ref();
 
@@ -320,6 +323,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         },
         Command::Channel(args) => {
             let mut c = read_config(&mut session, backend)?;
+            include_current_values(&mut capabilities, &c);
             let ch = &mut c.channels[args.channel - 1];
             if let Some(v) = args.enabled {
                 ch.enabled = v;
@@ -350,20 +354,24 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             }
             if let Some(v) = &args.bandwidth {
                 ch.bandwidth_hz = if v.eq_ignore_ascii_case("full") {
-                    200e6
+                    capabilities
+                        .bandwidths
+                        .iter()
+                        .map(|choice| choice.value)
+                        .reduce(f64::max)
+                        .ok_or("instrument reports no bandwidth choices")?
                 } else {
                     parse_si(v)?
                 };
             }
-            apply_section(
-                &mut session,
-                backend,
-                &ConfigSection::Channel(args.channel - 1, ch.clone()),
-            )?;
+            let section = ConfigSection::Channel(args.channel - 1, ch.clone());
+            validate_section(&section, &capabilities)?;
+            apply_section(&mut session, backend, &section)?;
             println!("CH{} settings applied", args.channel);
         }
         Command::Horizontal(args) => {
             let mut c = read_config(&mut session, backend)?;
+            include_current_values(&mut capabilities, &c);
             if let Some(v) = args.scale {
                 c.horizontal.scale = v;
             }
@@ -373,15 +381,14 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.record_length {
                 c.horizontal.record_length = v;
             }
-            apply_section(
-                &mut session,
-                backend,
-                &ConfigSection::Horizontal(c.horizontal),
-            )?;
+            let section = ConfigSection::Horizontal(c.horizontal);
+            validate_section(&section, &capabilities)?;
+            apply_section(&mut session, backend, &section)?;
             println!("horizontal settings applied");
         }
         Command::Trigger(args) => {
             let mut c = read_config(&mut session, backend)?;
+            include_current_values(&mut capabilities, &c);
             if let Some(v) = args.mode {
                 c.trigger.mode = match v {
                     TriggerMode::Auto => "AUTO",
@@ -406,11 +413,14 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.level {
                 c.trigger.level = v;
             }
-            apply_section(&mut session, backend, &ConfigSection::Trigger(c.trigger))?;
+            let section = ConfigSection::Trigger(c.trigger);
+            validate_section(&section, &capabilities)?;
+            apply_section(&mut session, backend, &section)?;
             println!("edge-trigger settings applied");
         }
         Command::Acquisition(args) => {
             let mut c = read_config(&mut session, backend)?;
+            include_current_values(&mut capabilities, &c);
             if let Some(v) = args.mode {
                 c.acquisition.mode = acquisition_mode(v).into();
             }
@@ -424,11 +434,9 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if let Some(v) = args.running {
                 c.acquisition.running = v;
             }
-            apply_section(
-                &mut session,
-                backend,
-                &ConfigSection::Acquisition(c.acquisition),
-            )?;
+            let section = ConfigSection::Acquisition(c.acquisition);
+            validate_section(&section, &capabilities)?;
+            apply_section(&mut session, backend, &section)?;
             println!("acquisition settings applied");
         }
         Command::Autoset => {
@@ -481,6 +489,7 @@ pub fn selftest(
         mut want_connect: bool,
     ) -> Result<(), String> {
         let mut configured = false;
+        let mut status_polled = false;
         let mut fetched = false;
         let deadline = Instant::now() + Duration::from_secs(40);
 
@@ -491,16 +500,28 @@ pub fn selftest(
             };
             match msg {
                 Msg::Status(s) => println!("  [{:>8.0?}] {s}", started.elapsed()),
-                Msg::Connected(idn) => {
+                Msg::Connected { idn, .. } => {
                     want_connect = false;
                     println!("  [{:>8.0?}] connected: {idn}", started.elapsed());
                     worker.send(Cmd::ReadConfig);
                 }
-                Msg::Config(_) => {
+                Msg::Config { .. } => {
                     configured = true;
+                    worker.send(Cmd::PollStatus);
+                }
+                Msg::AcquisitionStatus(Some(status)) => {
+                    status_polled = true;
+                    println!(
+                        "  [{:>8.0?}] acquisition: {}",
+                        started.elapsed(),
+                        status.display
+                    );
                     worker.send(Cmd::Fetch {
                         channels: vec!["CH1".into()],
                     });
+                }
+                Msg::AcquisitionStatus(None) => {
+                    return Err("acquisition status poll failed".into());
                 }
                 Msg::Traces(t) => {
                     fetched = true;
@@ -517,6 +538,9 @@ pub fn selftest(
         }
         if !configured {
             return Err("config never read".into());
+        }
+        if !status_polled {
+            return Err("acquisition status never read".into());
         }
         if !fetched {
             return Err("fetch timed out".into());

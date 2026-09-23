@@ -4,6 +4,7 @@ use std::time::Duration;
 use eframe::egui;
 use egui_plot::{GridMark, Legend, Line, Plot, PlotPoints, VLine};
 
+use crate::backend::{InstrumentCapabilities, ValueChoice};
 use crate::config::{ConfigSection, InstrumentConfig};
 use crate::export::ExportOptions;
 use crate::measure;
@@ -14,12 +15,15 @@ use crate::waveform::{demo_trace, ChannelTrace};
 use crate::worker::{Cmd, Msg, Worker};
 
 const CHANNELS: &[&str] = &["CH1", "CH2", "CH3", "CH4"];
+const STATUS_POLL_INTERVAL: f64 = 2.0;
+const STATUS_POLL_BACKOFF: f64 = 4.0;
 
 pub struct ViewerApp {
     host: String,
     port: String,
     status: String,
     idn: Option<String>,
+    capabilities: Option<InstrumentCapabilities>,
     config: Option<InstrumentConfig>,
     selected_channel: usize,
     traces: Vec<ChannelTrace>,
@@ -41,6 +45,10 @@ pub struct ViewerApp {
     frame_ms: f32,
     /// UI clock time before which reconnecting is pointless, after a wedge.
     retry_at: f64,
+    acquisition_status: Option<String>,
+    status_poll_in_flight: bool,
+    last_status_poll: f64,
+    status_poll_retry_at: f64,
     raw_command: String,
     raw_response: String,
     csv_wide: bool,
@@ -77,6 +85,7 @@ impl ViewerApp {
             port: port.to_string(),
             status: "Not connected.".into(),
             idn: None,
+            capabilities: None,
             config: None,
             selected_channel: 0,
             traces,
@@ -88,6 +97,10 @@ impl ViewerApp {
             frames: 0,
             frame_ms: 0.0,
             retry_at: 0.0,
+            acquisition_status: None,
+            status_poll_in_flight: false,
+            last_status_poll: 0.0,
+            status_poll_retry_at: 0.0,
             raw_command: "*IDN?".into(),
             raw_response: String::new(),
             csv_wide: prefs.csv_wide,
@@ -338,17 +351,35 @@ impl ViewerApp {
         while let Some(msg) = self.worker.try_recv() {
             match msg {
                 Msg::Status(s) => self.status = s,
-                Msg::Connected(idn) => {
+                Msg::Connected {
+                    idn,
+                    port,
+                    capabilities,
+                } => {
                     self.status = format!("Connected: {idn}");
                     self.idn = Some(idn);
+                    self.capabilities = Some(*capabilities);
+                    self.acquisition_status = None;
+                    self.status_poll_in_flight = false;
+                    self.last_status_poll = 0.0;
+                    self.status_poll_retry_at = 0.0;
+                    if self.port != port.to_string() {
+                        self.port = port.to_string();
+                        self.persist();
+                    }
                     self.pending = true;
                     self.worker.send(Cmd::ReadConfig);
                 }
                 Msg::Disconnected => {
                     self.idn = None;
+                    self.capabilities = None;
                     self.auto = false;
                     self.pending = false;
                     self.config = None;
+                    self.acquisition_status = None;
+                    self.status_poll_in_flight = false;
+                    self.last_status_poll = 0.0;
+                    self.status_poll_retry_at = 0.0;
                     self.status = "Disconnected.".into();
                 }
                 Msg::Traces(t) => {
@@ -357,15 +388,33 @@ impl ViewerApp {
                     self.status = format!("{n} samples across {} channel(s)", t.len());
                     self.set_traces(t);
                 }
-                Msg::Config(config) => {
+                Msg::Config {
+                    config,
+                    capabilities,
+                } => {
                     self.pending = false;
                     self.config = Some(*config);
+                    self.capabilities = Some(*capabilities);
                     self.status = "Instrument settings synchronized.".into();
                 }
                 Msg::Applied(status) => {
                     self.status = status;
                     self.pending = true;
                     self.worker.send(Cmd::ReadConfig);
+                }
+                Msg::AcquisitionStatus(status) => {
+                    self.status_poll_in_flight = false;
+                    match status {
+                        Some(status) => {
+                            self.acquisition_status = Some(status.display);
+                            if let Some(config) = self.config.as_mut() {
+                                config.acquisition.running = status.running;
+                            }
+                        }
+                        None => {
+                            self.status_poll_retry_at = now + STATUS_POLL_BACKOFF;
+                        }
+                    }
                 }
                 Msg::RawResponse(response) => {
                     self.pending = false;
@@ -420,6 +469,18 @@ impl eframe::App for ViewerApp {
                 self.request_fetch();
             }
             ctx.request_repaint_after(Duration::from_millis(200));
+        }
+
+        if self.idn.is_some()
+            && !self.pending
+            && !self.status_poll_in_flight
+            && now >= self.retry_at
+            && now >= self.status_poll_retry_at
+            && now - self.last_status_poll >= STATUS_POLL_INTERVAL
+        {
+            self.last_status_poll = now;
+            self.status_poll_in_flight = true;
+            self.worker.send(Cmd::PollStatus);
         }
 
         // In macOS fullscreen, clicks in the top ~20 px of the window report the
@@ -496,6 +557,14 @@ impl eframe::App for ViewerApp {
                         self.persist();
                     }
                 });
+                if connected {
+                    ui.separator();
+                    ui.label(format!(
+                        "Acq: {}",
+                        self.acquisition_status.as_deref().unwrap_or("…")
+                    ))
+                    .on_hover_text("Live acquisition / trigger state");
+                }
 
                 if ui.button("Demo").clicked() {
                     let demo = self.selected().iter().map(|c| demo_trace(c)).collect();
@@ -797,6 +866,12 @@ impl ViewerApp {
                     ui.label("Connect to read controls.");
                     return;
                 };
+                let Some(capabilities) = self.capabilities.clone() else {
+                    ui.label("Instrument capabilities unavailable.");
+                    return;
+                };
+                let channel_names: Vec<String> =
+                    CHANNELS.iter().map(|value| (*value).to_string()).collect();
 
                 egui::CollapsingHeader::new("Channels")
                     .default_open(true)
@@ -819,21 +894,31 @@ impl ViewerApp {
                         egui::ComboBox::from_label("Coupling")
                             .selected_text(&ch.coupling)
                             .show_ui(ui, |ui| {
-                                for value in ["DC", "AC", "DCREJECT"] {
-                                    ui.selectable_value(&mut ch.coupling, value.into(), value);
+                                for value in &capabilities.channel_couplings {
+                                    ui.selectable_value(&mut ch.coupling, value.clone(), value);
                                 }
                             });
 
-                        egui::ComboBox::from_label("Input")
-                            .selected_text(if ch.termination_ohms < 1000.0 {
-                                "50 Ω"
-                            } else {
-                                "1 MΩ"
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut ch.termination_ohms, 50.0, "50 Ω");
-                                ui.selectable_value(&mut ch.termination_ohms, 1e6, "1 MΩ");
+                        let termination =
+                            numeric_choice_label(ch.termination_ohms, &capabilities.terminations);
+                        if capabilities.termination_writable {
+                            egui::ComboBox::from_label("Input")
+                                .selected_text(termination)
+                                .show_ui(ui, |ui| {
+                                    for choice in &capabilities.terminations {
+                                        ui.selectable_value(
+                                            &mut ch.termination_ohms,
+                                            choice.value,
+                                            &choice.label,
+                                        );
+                                    }
+                                });
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label("Input");
+                                ui.add_enabled(false, egui::Label::new(termination));
                             });
+                        }
                         if ch.termination_ohms < 1000.0 {
                             ui.colored_label(
                                 egui::Color32::YELLOW,
@@ -857,16 +942,22 @@ impl ViewerApp {
                         ui.label(format!("Detected: {}", ch.probe_type));
 
                         egui::ComboBox::from_label("Bandwidth")
-                            .selected_text(format_bandwidth(ch.bandwidth_hz))
+                            .selected_text(numeric_choice_label(
+                                ch.bandwidth_hz,
+                                &capabilities.bandwidths,
+                            ))
                             .show_ui(ui, |ui| {
-                                for (label, value) in [
-                                    ("20 MHz", 20e6),
-                                    ("100 MHz", 100e6),
-                                    ("200 MHz / Full", 200e6),
-                                ] {
-                                    ui.selectable_value(&mut ch.bandwidth_hz, value, label);
+                                for choice in &capabilities.bandwidths {
+                                    ui.selectable_value(
+                                        &mut ch.bandwidth_hz,
+                                        choice.value,
+                                        &choice.label,
+                                    );
                                 }
                             });
+                        if let Some(hint) = &capabilities.channel_hint {
+                            ui.small(hint);
+                        }
 
                         if ui
                             .add_enabled(!self.pending, egui::Button::new("Apply channel"))
@@ -887,9 +978,7 @@ impl ViewerApp {
                         egui::ComboBox::from_label("Record length")
                             .selected_text(h.record_length.to_string())
                             .show_ui(ui, |ui| {
-                                for value in
-                                    [1_000, 10_000, 100_000, 1_000_000, 5_000_000, 10_000_000]
-                                {
+                                for &value in &capabilities.record_lengths {
                                     ui.selectable_value(
                                         &mut h.record_length,
                                         value,
@@ -897,6 +986,9 @@ impl ViewerApp {
                                     );
                                 }
                             });
+                        if let Some(hint) = &capabilities.horizontal_hint {
+                            ui.small(hint);
+                        }
                         if ui
                             .add_enabled(!self.pending, egui::Button::new("Apply horizontal"))
                             .clicked()
@@ -911,14 +1003,14 @@ impl ViewerApp {
                     .default_open(true)
                     .show(ui, |ui| {
                         let t = &mut config.trigger;
-                        combo_string(ui, "Mode", &mut t.mode, &["AUTO", "NORMAL"]);
-                        combo_string(ui, "Source", &mut t.source, CHANNELS);
-                        combo_string(ui, "Slope", &mut t.slope, &["RISE", "FALL", "EITHER"]);
+                        combo_string(ui, "Mode", &mut t.mode, &capabilities.trigger_modes);
+                        combo_string(ui, "Source", &mut t.source, &channel_names);
+                        combo_string(ui, "Slope", &mut t.slope, &capabilities.trigger_slopes);
                         combo_string(
                             ui,
                             "Coupling",
                             &mut t.coupling,
-                            &["DC", "AC", "HFREJ", "LFREJ", "NOISEREJ"],
+                            &capabilities.trigger_couplings,
                         );
                         value_row(ui, "Level (V)", &mut t.level, 0.01);
                         if ui
@@ -935,19 +1027,17 @@ impl ViewerApp {
                     .default_open(true)
                     .show(ui, |ui| {
                         let a = &mut config.acquisition;
-                        combo_string(
-                            ui,
-                            "Mode",
-                            &mut a.mode,
-                            &["SAMPLE", "PEAKDETECT", "HIRES", "AVERAGE", "ENVELOPE"],
-                        );
+                        combo_string(ui, "Mode", &mut a.mode, &capabilities.acquisition_modes);
                         combo_string(
                             ui,
                             "Stop after",
                             &mut a.stop_after,
-                            &["RUNSTOP", "SEQUENCE"],
+                            &capabilities.stop_after,
                         );
                         ui.checkbox(&mut a.running, "Running");
+                        if let Some(hint) = &capabilities.acquisition_hint {
+                            ui.small(hint);
+                        }
                         if ui
                             .add_enabled(!self.pending, egui::Button::new("Apply acquisition"))
                             .clicked()
@@ -1013,12 +1103,12 @@ fn value_row(ui: &mut egui::Ui, label: &str, value: &mut f64, speed: f64) {
     });
 }
 
-fn combo_string(ui: &mut egui::Ui, label: &str, current: &mut String, values: &[&str]) {
+fn combo_string(ui: &mut egui::Ui, label: &str, current: &mut String, values: &[String]) {
     egui::ComboBox::from_label(label)
         .selected_text(current.as_str())
         .show_ui(ui, |ui| {
             for value in values {
-                ui.selectable_value(current, (*value).to_string(), *value);
+                ui.selectable_value(current, value.clone(), value);
             }
         });
 }
@@ -1031,8 +1121,15 @@ fn gain_to_attenuation(gain: f64) -> f64 {
     }
 }
 
-fn format_bandwidth(value: f64) -> String {
-    format!("{:.0} MHz", value / 1e6)
+fn numeric_choice_label(value: f64, choices: &[ValueChoice]) -> String {
+    choices
+        .iter()
+        .find(|choice| {
+            let scale = value.abs().max(choice.value.abs()).max(1.0);
+            (value - choice.value).abs() <= scale * 1e-9
+        })
+        .map(|choice| choice.label.clone())
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn format_count(value: u64) -> String {

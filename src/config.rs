@@ -1,4 +1,4 @@
-use crate::backend::Backend;
+use crate::backend::{Backend, InstrumentCapabilities};
 use crate::scpi::{ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
@@ -52,6 +52,174 @@ pub enum ConfigSection {
     Horizontal(HorizontalConfig),
     Trigger(TriggerConfig),
     Acquisition(AcquisitionConfig),
+}
+
+/// Preserve instrument-reported values even when a model or firmware exposes a
+/// choice not present in our static profile. This keeps capability validation
+/// from rejecting an unchanged field while still constraining new GUI choices.
+pub fn include_current_values(
+    capabilities: &mut InstrumentCapabilities,
+    config: &InstrumentConfig,
+) {
+    for channel in &config.channels {
+        include_string(&mut capabilities.channel_couplings, &channel.coupling);
+        include_number(
+            &mut capabilities.terminations,
+            "Instrument value",
+            channel.termination_ohms,
+        );
+        include_number(
+            &mut capabilities.bandwidths,
+            &format!("{} MHz", channel.bandwidth_hz / 1e6),
+            channel.bandwidth_hz,
+        );
+    }
+    if !capabilities
+        .record_lengths
+        .contains(&config.horizontal.record_length)
+    {
+        capabilities
+            .record_lengths
+            .push(config.horizontal.record_length);
+        capabilities.record_lengths.sort_unstable();
+    }
+    include_string(&mut capabilities.trigger_modes, &config.trigger.mode);
+    include_string(&mut capabilities.trigger_slopes, &config.trigger.slope);
+    include_string(
+        &mut capabilities.trigger_couplings,
+        &config.trigger.coupling,
+    );
+    include_string(
+        &mut capabilities.acquisition_modes,
+        &config.acquisition.mode,
+    );
+    include_string(&mut capabilities.stop_after, &config.acquisition.stop_after);
+}
+
+fn include_string(choices: &mut Vec<String>, value: &str) {
+    if !choices
+        .iter()
+        .any(|choice| choice.eq_ignore_ascii_case(value))
+    {
+        choices.push(value.to_string());
+    }
+}
+
+fn include_number(choices: &mut Vec<crate::backend::ValueChoice>, label: &str, value: f64) {
+    if !choices.iter().any(|choice| {
+        let scale = value.abs().max(choice.value.abs()).max(1.0);
+        (value - choice.value).abs() <= scale * 1e-9
+    }) {
+        choices.push(crate::backend::ValueChoice::new(label, value));
+    }
+}
+
+pub fn validate_section(
+    section: &ConfigSection,
+    capabilities: &InstrumentCapabilities,
+) -> Result<(), ScpiError> {
+    match section {
+        ConfigSection::Channel(_, channel) => {
+            require_string(
+                "channel coupling",
+                &channel.coupling,
+                &capabilities.channel_couplings,
+            )?;
+            require_number(
+                "input termination",
+                channel.termination_ohms,
+                &capabilities
+                    .terminations
+                    .iter()
+                    .map(|choice| choice.value)
+                    .collect::<Vec<_>>(),
+            )?;
+            require_number(
+                "bandwidth",
+                channel.bandwidth_hz,
+                &capabilities
+                    .bandwidths
+                    .iter()
+                    .map(|choice| choice.value)
+                    .collect::<Vec<_>>(),
+            )?;
+        }
+        ConfigSection::Horizontal(horizontal) => {
+            if !capabilities
+                .record_lengths
+                .contains(&horizontal.record_length)
+            {
+                return Err(unsupported(
+                    "record length",
+                    horizontal.record_length,
+                    capabilities
+                        .record_lengths
+                        .iter()
+                        .map(u64::to_string)
+                        .collect(),
+                ));
+            }
+        }
+        ConfigSection::Trigger(trigger) => {
+            require_string("trigger mode", &trigger.mode, &capabilities.trigger_modes)?;
+            require_string(
+                "trigger slope",
+                &trigger.slope,
+                &capabilities.trigger_slopes,
+            )?;
+            require_string(
+                "trigger coupling",
+                &trigger.coupling,
+                &capabilities.trigger_couplings,
+            )?;
+        }
+        ConfigSection::Acquisition(acquisition) => {
+            require_string(
+                "acquisition mode",
+                &acquisition.mode,
+                &capabilities.acquisition_modes,
+            )?;
+            require_string(
+                "stop-after mode",
+                &acquisition.stop_after,
+                &capabilities.stop_after,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_string(name: &str, value: &str, choices: &[String]) -> Result<(), ScpiError> {
+    if choices
+        .iter()
+        .any(|choice| choice.eq_ignore_ascii_case(value))
+    {
+        Ok(())
+    } else {
+        Err(unsupported(name, value, choices.to_vec()))
+    }
+}
+
+fn require_number(name: &str, value: f64, choices: &[f64]) -> Result<(), ScpiError> {
+    if choices.iter().any(|choice| {
+        let scale = value.abs().max(choice.abs()).max(1.0);
+        (value - choice).abs() <= scale * 1e-9
+    }) {
+        Ok(())
+    } else {
+        Err(unsupported(
+            name,
+            value,
+            choices.iter().map(|choice| choice.to_string()).collect(),
+        ))
+    }
+}
+
+fn unsupported(name: &str, value: impl std::fmt::Display, choices: Vec<String>) -> ScpiError {
+    ScpiError::Unsupported(format!(
+        "unsupported {name} {value}; choose {}",
+        choices.join(", ")
+    ))
 }
 
 pub fn read_config(
@@ -230,5 +398,86 @@ mod tests {
         assert_eq!(parse_count(""), None);
         assert_eq!(parse_count("-1"), None);
         assert_eq!(parse_count("inf"), None);
+    }
+
+    #[test]
+    fn validates_rigol_fixed_termination_and_memory_choices() {
+        let capabilities = crate::backend::from_idn("RIGOL,DHO924S,SN,00.01.05").capabilities();
+        let mut channel = ChannelConfig {
+            enabled: true,
+            scale: 0.1,
+            position: 0.0,
+            offset: 0.0,
+            coupling: "DC".into(),
+            termination_ohms: 1e6,
+            bandwidth_hz: 250e6,
+            probe_gain: 1.0,
+            probe_type: "unknown".into(),
+        };
+        assert!(
+            validate_section(&ConfigSection::Channel(0, channel.clone()), &capabilities).is_ok()
+        );
+        channel.termination_ohms = 50.0;
+        assert!(
+            validate_section(&ConfigSection::Channel(0, channel), &capabilities)
+                .unwrap_err()
+                .to_string()
+                .contains("input termination")
+        );
+
+        let horizontal = HorizontalConfig {
+            scale: 1e-3,
+            position: 50.0,
+            record_length: 50_000_000,
+        };
+        assert!(validate_section(&ConfigSection::Horizontal(horizontal), &capabilities).is_ok());
+    }
+
+    #[test]
+    fn current_instrument_values_extend_static_capabilities() {
+        let mut capabilities = crate::backend::from_idn("TEKTRONIX,MDO3024,SN,1").capabilities();
+        let channel = ChannelConfig {
+            enabled: true,
+            scale: 0.1,
+            position: 0.0,
+            offset: 0.0,
+            coupling: "CUSTOM".into(),
+            termination_ohms: 75.0,
+            bandwidth_hz: 123e6,
+            probe_gain: 1.0,
+            probe_type: "unknown".into(),
+        };
+        let config = InstrumentConfig {
+            channels: [channel.clone(), channel.clone(), channel.clone(), channel],
+            horizontal: HorizontalConfig {
+                scale: 1e-3,
+                position: 50.0,
+                record_length: 12_345,
+            },
+            trigger: TriggerConfig {
+                mode: "CUSTOM".into(),
+                source: "CH1".into(),
+                slope: "CUSTOM".into(),
+                coupling: "CUSTOM".into(),
+                level: 0.0,
+            },
+            acquisition: AcquisitionConfig {
+                mode: "CUSTOM".into(),
+                stop_after: "CUSTOM".into(),
+                running: true,
+            },
+        };
+
+        include_current_values(&mut capabilities, &config);
+        assert!(capabilities.channel_couplings.contains(&"CUSTOM".into()));
+        assert!(capabilities.record_lengths.contains(&12_345));
+        assert!(validate_section(
+            &ConfigSection::Channel(0, config.channels[0].clone()),
+            &capabilities
+        )
+        .is_ok());
+        assert!(
+            validate_section(&ConfigSection::Horizontal(config.horizontal), &capabilities).is_ok()
+        );
     }
 }

@@ -2,7 +2,7 @@
 name = "mdo-viewer"
 version = "0.1.0"
 edition = "2021"
-description = "Live waveform viewer for Tektronix MDO3000-series scopes over SCPI TCP"
+description = "Live waveform viewer for Tektronix MDO3000 and Rigol DHO900 scopes over SCPI TCP"
 license = "MIT"
 publish = false
 

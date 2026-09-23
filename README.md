@@ -42,7 +42,11 @@ nc -z -v <scope-ip> 5555
 cargo run --release -- --host <scope-ip> --port 5555
 ```
 
-The GUI remembers the host and port after they are entered once.
+The GUI remembers the host and port after they are entered once. If the selected
+port refuses the TCP connection, it safely tries the other standard scope port
+(4000/5555) and remembers the one that succeeds. It does not switch ports after
+TCP opens or on a timeout, avoiding extra reconnect churn on an unresponsive
+Tektronix.
 
 ## Run
 
@@ -87,7 +91,14 @@ Auto captures every 2 seconds by default; the spinner next to it sets the interv
 (0.5–30 s). The slow default is deliberate — see the quirks section. Auto switches
 itself off on any error rather than retrying into a struggling instrument.
 
-The left panel reads the current front-panel state and controls:
+While connected and otherwise idle, the toolbar polls acquisition state every
+two seconds. Tektronix reports `Acq: RUN`/`STOP`; Rigol also exposes trigger
+states such as `TD` and `WAIT`. Polls pause during fetches and settings changes,
+never reconnect, and silently back off if the instrument does not answer.
+
+The left panel reads the current front-panel state and controls. Its choices are
+provided by the detected instrument backend, so unsupported settings are hidden
+or read-only:
 
 - CH1–CH4 enable, volts/div, position, offset, coupling, 1 MΩ/50 Ω input,
   passive-probe attenuation, and bandwidth
@@ -95,6 +106,11 @@ The left panel reads the current front-panel state and controls:
 - edge-trigger mode, source, slope, coupling, and level
 - acquisition mode, continuous/single-sequence behavior, and run/stop
 - Autoset and an advanced raw SCPI query/write console
+
+For example, DHO900 input termination is shown as fixed 1 MΩ and its bandwidth
+choices are 20 MHz or the model's full bandwidth. Its memory-depth selector
+includes 1k–50M with a reminder that the maximum is 50M for one active channel,
+25M for two, and 10M for all four.
 
 Each Apply operation is read back from the instrument so values coerced by the
 scope are reflected in the GUI. Physical front-panel changes can be imported with

@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::backend::Backend;
+use crate::backend::{AcquisitionStatus, Backend, InstrumentCapabilities, ValueChoice};
 use crate::config::query_f64;
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{self, ChannelTrace, WaveformError};
@@ -12,6 +12,31 @@ pub struct Tek;
 impl Backend for Tek {
     fn name(&self) -> &str {
         "Tektronix"
+    }
+
+    fn capabilities(&self) -> InstrumentCapabilities {
+        InstrumentCapabilities {
+            channel_couplings: strings(&["DC", "AC", "DCREJECT"]),
+            terminations: vec![
+                ValueChoice::new("50 Ω", 50.0),
+                ValueChoice::new("1 MΩ", 1e6),
+            ],
+            termination_writable: true,
+            bandwidths: vec![
+                ValueChoice::new("20 MHz", 20e6),
+                ValueChoice::new("100 MHz", 100e6),
+                ValueChoice::new("200 MHz / Full", 200e6),
+            ],
+            record_lengths: vec![1_000, 10_000, 100_000, 1_000_000, 5_000_000, 10_000_000],
+            trigger_modes: strings(&["AUTO", "NORMAL"]),
+            trigger_slopes: strings(&["RISE", "FALL", "EITHER"]),
+            trigger_couplings: strings(&["DC", "AC", "HFREJ", "LFREJ", "NOISEREJ"]),
+            acquisition_modes: strings(&["SAMPLE", "PEAKDETECT", "HIRES", "AVERAGE", "ENVELOPE"]),
+            stop_after: strings(&["RUNSTOP", "SEQUENCE"]),
+            channel_hint: None,
+            horizontal_hint: None,
+            acquisition_hint: None,
+        }
     }
 
     fn preamble(&self) -> Vec<String> {
@@ -101,7 +126,19 @@ impl Backend for Tek {
         Ok(())
     }
 
+    fn acquisition_status(&self, s: &mut ScpiSession) -> Result<AcquisitionStatus, ScpiError> {
+        let running = crate::config::query_bool(s, "ACQUIRE:STATE?")?;
+        Ok(AcquisitionStatus {
+            running,
+            display: if running { "RUN" } else { "STOP" }.into(),
+        })
+    }
+
     fn autoset(&self, s: &mut ScpiSession) -> Result<(), ScpiError> {
         s.write("AUTOSET EXECUTE")
     }
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
 }
