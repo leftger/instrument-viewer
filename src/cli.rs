@@ -51,6 +51,12 @@ pub enum Command {
         /// Channels to capture. Defaults to those enabled on the instrument.
         #[arg(long, value_delimiter = ',')]
         channels: Vec<String>,
+        /// Write a column per channel (`t,CH1,CH2,…`) instead of long-form rows.
+        #[arg(long)]
+        wide: bool,
+        /// Arm STOPAFTER SEQUENCE, wait for complete, then fetch.
+        #[arg(long)]
+        sequence: bool,
     },
     /// Run the scope's built-in autoset.
     Autoset,
@@ -253,10 +259,12 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             format,
             out,
             channels,
+            wide,
+            sequence,
         } => {
             let format = resolve_format(*format, out.as_deref())?;
+            let config = read_config(&mut session)?;
             let channels = if channels.is_empty() {
-                let config = read_config(&mut session)?;
                 let enabled: Vec<String> = (0..4)
                     .filter(|&i| config.channels[i].enabled)
                     .map(|i| format!("CH{}", i + 1))
@@ -272,11 +280,22 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                     .map(|c| c.trim().to_ascii_uppercase())
                     .collect()
             };
+            if *sequence {
+                crate::acquire::wait_sequence(&mut session, Duration::from_secs(30))?;
+            }
             let mut traces = Vec::new();
             for ch in &channels {
                 traces.push(fetch_channel(&mut session, ch)?);
             }
-            let body = export::render(&traces, Some(&idn), format);
+            let body = export::render(&export::ExportOptions {
+                traces: &traces,
+                idn: Some(&idn),
+                settings: Some(&config),
+                format,
+                csv_wide: *wide,
+                cursor_a: None,
+                cursor_b: None,
+            });
             match out {
                 Some(path) => {
                     std::fs::write(path, body)?;

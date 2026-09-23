@@ -10,6 +10,7 @@ pub enum Cmd {
     Connect { addr: String },
     Disconnect,
     Fetch { channels: Vec<String> },
+    FetchSequence { channels: Vec<String> },
     ReadConfig,
     ApplyConfig(ConfigSection),
     RawQuery(String),
@@ -78,6 +79,53 @@ fn fetch_traces(s: &mut ScpiSession, channels: &[String]) -> Result<Vec<ChannelT
     Ok(traces)
 }
 
+fn handle_fetch(
+    session: &mut Option<ScpiSession>,
+    msg_tx: &Sender<Msg>,
+    repaint: impl Fn(),
+    channels: &[String],
+    sequence: bool,
+) {
+    let Some(s) = session.as_mut() else {
+        let _ = msg_tx.send(Msg::Error("Not connected".into()));
+        repaint();
+        return;
+    };
+    if sequence {
+        let _ = msg_tx.send(Msg::Status(
+            "SEQUENCE acquire: waiting for trigger/complete…".into(),
+        ));
+        repaint();
+        if let Err(e) = crate::acquire::wait_sequence(s, Duration::from_secs(30)) {
+            let _ = s.resync();
+            let _ = msg_tx.send(Msg::Error(format!("Sequence acquire failed: {e}")));
+            repaint();
+            return;
+        }
+    }
+    match fetch_traces(s, channels) {
+        Ok(traces) => {
+            let _ = msg_tx.send(Msg::Traces(traces));
+        }
+        Err(first_error) => {
+            let _ = s.resync();
+            thread::sleep(Duration::from_millis(150));
+            match fetch_traces(s, channels) {
+                Ok(traces) => {
+                    let _ = msg_tx.send(Msg::Traces(traces));
+                }
+                Err(second_error) => {
+                    let _ = s.resync();
+                    let _ = msg_tx.send(Msg::Error(format!(
+                        "{second_error} (retry after {first_error})"
+                    )));
+                }
+            }
+        }
+    }
+    repaint();
+}
+
 impl Worker {
     pub fn spawn(repaint: impl Fn() + Send + 'static) -> Self {
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
@@ -116,35 +164,10 @@ impl Worker {
                         repaint();
                     }
                     Cmd::Fetch { channels } => {
-                        let Some(s) = session.as_mut() else {
-                            let _ = msg_tx.send(Msg::Error("Not connected".into()));
-                            repaint();
-                            continue;
-                        };
-                        match fetch_traces(s, &channels) {
-                            Ok(traces) => {
-                                let _ = msg_tx.send(Msg::Traces(traces));
-                            }
-                            Err(first_error) => {
-                                // One-off silent responses occur on this scope.
-                                // A failed transfer can also leave unread output,
-                                // so clear it and retry the complete channel set.
-                                let _ = s.resync();
-                                thread::sleep(Duration::from_millis(150));
-                                match fetch_traces(s, &channels) {
-                                    Ok(traces) => {
-                                        let _ = msg_tx.send(Msg::Traces(traces));
-                                    }
-                                    Err(second_error) => {
-                                        let _ = s.resync();
-                                        let _ = msg_tx.send(Msg::Error(format!(
-                                            "{second_error} (retry after {first_error})"
-                                        )));
-                                    }
-                                }
-                            }
-                        }
-                        repaint();
+                        handle_fetch(&mut session, &msg_tx, &repaint, &channels, false);
+                    }
+                    Cmd::FetchSequence { channels } => {
+                        handle_fetch(&mut session, &msg_tx, &repaint, &channels, true);
                     }
                     Cmd::ReadConfig => {
                         let Some(s) = session.as_mut() else {

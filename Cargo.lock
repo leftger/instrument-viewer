@@ -1819,6 +1819,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui_plot",
+ "image",
  "rfd",
  "thiserror 2.0.20",
 ]

@@ -1,9 +1,13 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
-use egui_plot::{Legend, Line, Plot, PlotPoints};
+use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
 
 use crate::config::{ConfigSection, InstrumentConfig};
+use crate::export::ExportOptions;
+use crate::measure;
+use crate::prefs::{self, Prefs};
 use crate::waveform::{demo_trace, ChannelTrace};
 use crate::worker::{Cmd, Msg, Worker};
 
@@ -28,11 +32,26 @@ pub struct ViewerApp {
     retry_at: f64,
     raw_command: String,
     raw_response: String,
+    csv_wide: bool,
+    cursors_on: bool,
+    cursor_a: Option<f64>,
+    cursor_b: Option<f64>,
+    pending_png: Option<PathBuf>,
+    /// Rescale to the data on every frame, so each capture fits the window.
+    auto_fit: bool,
+    zoom_x: bool,
+    zoom_y: bool,
+    /// Wheel/two-finger scroll zooms instead of panning. Mac trackpads have no
+    /// wheel-modifier convention that reaches egui as a per-axis zoom.
+    scroll_zooms: bool,
+    /// Zoom factor queued by the toolbar buttons, applied inside the plot.
+    zoom_request: Option<egui::Vec2>,
+    fit_request: bool,
     worker: Worker,
 }
 
 impl ViewerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, host: String, port: u16) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, host: String, port: u16, prefs: Prefs) -> Self {
         let ctx = cc.egui_ctx.clone();
         let worker = Worker::spawn(move || ctx.request_repaint());
         Self {
@@ -44,14 +63,35 @@ impl ViewerApp {
             selected_channel: 0,
             traces: vec![demo_trace("CH1")],
             auto: false,
-            auto_interval: 2.0,
+            auto_interval: prefs.auto_interval,
             pending: false,
             last_fetch: 0.0,
             retry_at: 0.0,
             raw_command: "*IDN?".into(),
             raw_response: String::new(),
+            csv_wide: prefs.csv_wide,
+            cursors_on: false,
+            cursor_a: None,
+            cursor_b: None,
+            pending_png: None,
+            auto_fit: true,
+            zoom_x: true,
+            zoom_y: true,
+            scroll_zooms: prefs.scroll_zooms,
+            zoom_request: None,
+            fit_request: false,
             worker,
         }
+    }
+
+    fn persist(&self) {
+        prefs::save(&Prefs {
+            host: self.host.clone(),
+            port: self.port.clone(),
+            auto_interval: self.auto_interval,
+            csv_wide: self.csv_wide,
+            scroll_zooms: self.scroll_zooms,
+        });
     }
 
     fn addr(&self) -> String {
@@ -85,6 +125,32 @@ impl ViewerApp {
         self.worker.send(Cmd::Fetch { channels });
     }
 
+    fn request_sequence_fetch(&mut self) {
+        if self.pending || self.idn.is_none() {
+            return;
+        }
+        let channels = self.selected();
+        if channels.is_empty() {
+            self.status = "No channels selected.".into();
+            return;
+        }
+        self.auto = false;
+        self.pending = true;
+        self.worker.send(Cmd::FetchSequence { channels });
+    }
+
+    fn export_opts(&self, format: crate::export::ExportFormat) -> ExportOptions<'_> {
+        ExportOptions {
+            traces: &self.traces,
+            idn: self.idn.as_deref(),
+            settings: self.config.as_ref(),
+            format,
+            csv_wide: self.csv_wide,
+            cursor_a: self.cursor_a.filter(|_| self.cursors_on),
+            cursor_b: self.cursor_b.filter(|_| self.cursors_on),
+        }
+    }
+
     fn export_traces(&mut self, format: crate::export::ExportFormat) {
         let name = format!("mdo-capture.{}", format.extension());
         let mut dialog = rfd::FileDialog::new().set_file_name(&name);
@@ -95,7 +161,8 @@ impl ViewerApp {
         let Some(path) = dialog.save_file() else {
             return;
         };
-        match crate::export::write_file(&path, &self.traces, self.idn.as_deref(), format) {
+        let opts = self.export_opts(format);
+        match crate::export::write_file(&path, &opts) {
             Ok(()) => {
                 self.status = format!("Wrote {}", path.display());
             }
@@ -103,6 +170,128 @@ impl ViewerApp {
                 self.status = format!("Export failed: {e}");
             }
         }
+    }
+
+    fn queue_zoom(&mut self, k: f32) {
+        self.zoom_request = Some(axis_factor(k, egui::Vec2b::new(self.zoom_x, self.zoom_y)));
+        self.auto_fit = false;
+    }
+
+    fn request_png(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("mdo-capture.png")
+            .add_filter("PNG", &["png"])
+            .save_file()
+        else {
+            return;
+        };
+        self.pending_png = Some(path);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+    }
+
+    fn collect_screenshot(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.pending_png.clone() else {
+            return;
+        };
+        let image = ctx.input(|i| {
+            i.raw.events.iter().find_map(|ev| match ev {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = image else {
+            return;
+        };
+        self.pending_png = None;
+        match write_png(&path, &image) {
+            Ok(()) => self.status = format!("Wrote {}", path.display()),
+            Err(e) => self.status = format!("PNG failed: {e}"),
+        }
+    }
+
+    fn show_measurements(&self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("meas").show(ctx, |ui| {
+            ui.add_space(2.0);
+            if self.cursors_on {
+                ui.horizontal_wrapped(|ui| {
+                    let a = self.cursor_a;
+                    let b = self.cursor_b;
+                    ui.label(format!(
+                        "A: {}",
+                        a.map(|t| measure::format_si(t, "s"))
+                            .unwrap_or_else(|| "click".into())
+                    ));
+                    ui.label(format!(
+                        "B: {}",
+                        b.map(|t| measure::format_si(t, "s"))
+                            .unwrap_or_else(|| "right-click".into())
+                    ));
+                    if let (Some(t1), Some(t2)) = (a, b) {
+                        let dt = t2 - t1;
+                        ui.strong(format!("Δt {}", measure::format_si(dt, "s")));
+                        if dt.abs() > f64::EPSILON {
+                            ui.strong(format!("1/Δt {}", measure::format_si(1.0 / dt.abs(), "Hz")));
+                        }
+                    }
+                    if let Some(trace) = self.traces.first() {
+                        if let Some(t) = a {
+                            if let Some(v) = measure::value_at(trace, t) {
+                                ui.label(format!(
+                                    "A@{} {}",
+                                    trace.channel,
+                                    measure::format_si(v, &trace.y_unit)
+                                ));
+                            }
+                        }
+                        if let Some(t) = b {
+                            if let Some(v) = measure::value_at(trace, t) {
+                                ui.label(format!(
+                                    "B@{} {}",
+                                    trace.channel,
+                                    measure::format_si(v, &trace.y_unit)
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for trace in &self.traces {
+                        let Some(m) = measure::measure(trace) else {
+                            continue;
+                        };
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new(&trace.channel).strong());
+                            ui.label(format!("min {}", measure::format_si(m.min, &trace.y_unit)));
+                            ui.label(format!("max {}", measure::format_si(m.max, &trace.y_unit)));
+                            ui.label(format!(
+                                "pk-pk {}",
+                                measure::format_si(m.pk_pk, &trace.y_unit)
+                            ));
+                            ui.label(format!(
+                                "mean {}",
+                                measure::format_si(m.mean, &trace.y_unit)
+                            ));
+                            ui.label(format!("rms {}", measure::format_si(m.rms, &trace.y_unit)));
+                            match (m.period_s, m.frequency_hz) {
+                                (Some(p), Some(f)) => {
+                                    ui.label(format!(
+                                        "{}  {}",
+                                        measure::format_si(p, "s"),
+                                        measure::format_si(f, "Hz")
+                                    ));
+                                }
+                                _ => {
+                                    ui.label("period —");
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            ui.add_space(2.0);
+        });
     }
 
     fn pump(&mut self, now: f64) {
@@ -161,6 +350,7 @@ impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.pump(now);
+        self.collect_screenshot(ctx);
 
         if now < self.retry_at {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -171,7 +361,6 @@ impl eframe::App for ViewerApp {
                 self.last_fetch = now;
                 self.request_fetch();
             }
-            // Only needs to wake often enough to notice the interval elapsing.
             ctx.request_repaint_after(Duration::from_millis(200));
         }
 
@@ -193,12 +382,11 @@ impl eframe::App for ViewerApp {
                     } else {
                         "Connect".to_string()
                     };
-                    // Must stay disabled while a connect is in flight. Queued
-                    // duplicate connects churn sockets, which wedges the scope.
                     if ui
                         .add_enabled(!self.pending && !cooling, egui::Button::new(label))
                         .clicked()
                     {
+                        self.persist();
                         self.pending = true;
                         self.worker.send(Cmd::Connect { addr: self.addr() });
                     }
@@ -214,9 +402,17 @@ impl eframe::App for ViewerApp {
                     if ui.button("Fetch").clicked() {
                         self.request_fetch();
                     }
+                    if ui
+                        .button("Sequence")
+                        .on_hover_text("STOPAFTER SEQUENCE, wait, then fetch")
+                        .clicked()
+                    {
+                        self.request_sequence_fetch();
+                    }
                 });
                 ui.add_enabled_ui(connected, |ui| {
                     ui.checkbox(&mut self.auto, "Auto");
+                    let before = self.auto_interval;
                     ui.add(
                         egui::DragValue::new(&mut self.auto_interval)
                             .speed(0.1)
@@ -224,12 +420,18 @@ impl eframe::App for ViewerApp {
                             .suffix(" s"),
                     )
                     .on_hover_text("Seconds between automatic captures");
+                    if (self.auto_interval - before).abs() > f64::EPSILON {
+                        self.persist();
+                    }
                 });
 
                 if ui.button("Demo").clicked() {
                     self.traces = self.selected().iter().map(|c| demo_trace(c)).collect();
                     self.status = "Demo waveform (no instrument).".into();
                 }
+
+                ui.checkbox(&mut self.cursors_on, "Cursors")
+                    .on_hover_text("Click plot: left sets A, right/shift sets B");
 
                 if ui
                     .add_enabled(!self.traces.is_empty(), egui::Button::new("CSV"))
@@ -238,38 +440,166 @@ impl eframe::App for ViewerApp {
                 {
                     self.export_traces(crate::export::ExportFormat::Csv);
                 }
+                if ui.checkbox(&mut self.csv_wide, "Wide").changed() {
+                    self.persist();
+                }
                 if ui
                     .add_enabled(!self.traces.is_empty(), egui::Button::new("JSON"))
-                    .on_hover_text("Save the plotted traces as JSON")
+                    .on_hover_text("Save traces, measurements, and settings as JSON")
                     .clicked()
                 {
                     self.export_traces(crate::export::ExportFormat::Json);
+                }
+                if ui
+                    .button("PNG")
+                    .on_hover_text("Save a window screenshot")
+                    .clicked()
+                {
+                    self.request_png(ctx);
                 }
 
                 if self.pending {
                     ui.spinner();
                 }
             });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label("View");
+                if ui
+                    .selectable_label(self.auto_fit, "Autoscale")
+                    .on_hover_text("Refit both axes to the data on every capture")
+                    .clicked()
+                {
+                    self.auto_fit = !self.auto_fit;
+                }
+                if ui.button("Fit now").clicked() {
+                    self.fit_request = true;
+                }
+                ui.separator();
+
+                ui.label("Zoom axes");
+                ui.checkbox(&mut self.zoom_x, "X");
+                ui.checkbox(&mut self.zoom_y, "Y");
+                ui.separator();
+
+                if ui.button("−").on_hover_text("Zoom out").clicked() {
+                    self.queue_zoom(1.0 / 1.4);
+                }
+                if ui.button("+").on_hover_text("Zoom in").clicked() {
+                    self.queue_zoom(1.4);
+                }
+                ui.separator();
+
+                ui.label("Y only");
+                if ui.button("−Y").clicked() {
+                    self.zoom_request = Some(egui::Vec2::new(1.0, 1.0 / 1.4));
+                    self.auto_fit = false;
+                }
+                if ui.button("+Y").clicked() {
+                    self.zoom_request = Some(egui::Vec2::new(1.0, 1.4));
+                    self.auto_fit = false;
+                }
+                ui.separator();
+
+                if ui
+                    .checkbox(&mut self.scroll_zooms, "Scroll zooms")
+                    .on_hover_text("Off: two-finger scroll pans. On: it zooms the enabled axes.")
+                    .changed()
+                {
+                    self.persist();
+                }
+                ui.label("Drag pans · right-drag box-zooms");
+            });
+
             ui.label(&self.status);
             ui.add_space(4.0);
         });
 
         self.show_controls(ctx);
+        self.show_measurements(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let x_unit = self.traces.first().map_or("s", |t| t.x_unit.as_str());
             let y_unit = self.traces.first().map_or("V", |t| t.y_unit.as_str());
+            let mut clicked = None;
+            let mut secondary = false;
+            let zoom_request = self.zoom_request.take();
+            let fit_request = std::mem::take(&mut self.fit_request);
+            let axes = egui::Vec2b::new(self.zoom_x, self.zoom_y);
+
+            // Read the wheel before the plot so auto-fit can be released in the
+            // same frame; otherwise it would snap the view back immediately.
+            let scroll = if self.scroll_zooms && ui.rect_contains_pointer(ui.max_rect()) {
+                ctx.input(|i| i.smooth_scroll_delta.y)
+            } else {
+                0.0
+            };
+            let scroll_factor = (scroll != 0.0)
+                .then(|| axis_factor((scroll * 0.004).exp(), axes));
+            if zoom_request.is_some() || scroll_factor.is_some() {
+                self.auto_fit = false;
+            }
+            let do_fit = fit_request || self.auto_fit;
+            let mut dragged = false;
             Plot::new("mdo")
                 .legend(Legend::default())
                 .x_axis_label(x_unit)
                 .y_axis_label(y_unit)
+                .allow_zoom(axes)
+                .allow_drag(true)
+                .allow_boxed_zoom(true)
+                // Manual scroll handling below, so the wheel can zoom per axis.
+                .allow_scroll(!self.scroll_zooms)
                 .show(ui, |plot_ui| {
                     for trace in &self.traces {
                         let pts = PlotPoints::from_iter(trace.points.iter().map(|p| [p[0], p[1]]));
                         plot_ui.line(Line::new(trace.channel.clone(), pts));
                     }
+                    if self.cursors_on {
+                        if let Some(t) = self.cursor_a {
+                            plot_ui.vline(VLine::new("A", t));
+                        }
+                        if let Some(t) = self.cursor_b {
+                            plot_ui.vline(VLine::new("B", t));
+                        }
+                    }
+
+                    if do_fit {
+                        plot_ui.set_auto_bounds(true);
+                    }
+                    if let Some(factor) = zoom_request {
+                        let center = plot_ui.plot_bounds().center();
+                        plot_ui.zoom_bounds(factor, center);
+                    }
+                    if let Some(factor) = scroll_factor {
+                        plot_ui.zoom_bounds_around_hovered(factor);
+                    }
+
+                    let resp = plot_ui.response();
+                    dragged = resp.dragged();
+                    if resp.clicked() || resp.secondary_clicked() {
+                        clicked = plot_ui.pointer_coordinate().map(|p| p.x);
+                        secondary =
+                            resp.secondary_clicked() || resp.ctx.input(|i| i.modifiers.shift);
+                    }
                 });
+            if dragged {
+                self.auto_fit = false;
+            }
+            if self.cursors_on {
+                if let Some(t) = clicked {
+                    if secondary {
+                        self.cursor_b = Some(t);
+                    } else {
+                        self.cursor_a = Some(t);
+                    }
+                }
+            }
         });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.persist();
     }
 }
 
@@ -514,6 +844,25 @@ impl ViewerApp {
                 self.config = Some(config);
             });
     }
+}
+
+/// Apply a scalar zoom only to the axes the user left enabled.
+fn axis_factor(k: f32, axes: egui::Vec2b) -> egui::Vec2 {
+    egui::Vec2::new(
+        if axes.x { k } else { 1.0 },
+        if axes.y { k } else { 1.0 },
+    )
+}
+
+fn write_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), String> {
+    let [w, h] = image.size;
+    let mut raw = Vec::with_capacity(w * h * 4);
+    for p in &image.pixels {
+        raw.extend_from_slice(&p.to_array());
+    }
+    let img = image::RgbaImage::from_raw(w as u32, h as u32, raw)
+        .ok_or_else(|| "invalid screenshot buffer".to_string())?;
+    img.save(path).map_err(|e| e.to_string())
 }
 
 fn value_row(ui: &mut egui::Ui, label: &str, value: &mut f64, speed: f64) {

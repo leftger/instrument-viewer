@@ -10,5 +10,6 @@ publish = false
 clap = { version = "4", features = ["derive"] }
 eframe = "0.32"
 egui_plot = "0.33"
+image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
 thiserror = "2"

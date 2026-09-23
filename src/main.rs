@@ -1,7 +1,10 @@
+mod acquire;
 mod app;
 mod cli;
 mod config;
 mod export;
+mod measure;
+mod prefs;
 mod scpi;
 mod waveform;
 mod worker;
@@ -23,6 +26,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_gui(host: String, port: u16) -> eframe::Result<()> {
+    let prefs = prefs::load();
+    let host = if prefs::argv_has("--host") {
+        host
+    } else {
+        prefs.host.clone()
+    };
+    let port = if prefs::argv_has("--port") {
+        port
+    } else {
+        prefs.port.parse().unwrap_or(port)
+    };
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
@@ -32,6 +46,6 @@ fn run_gui(host: String, port: u16) -> eframe::Result<()> {
     eframe::run_native(
         "MDO viewer",
         options,
-        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, host, port)))),
+        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, host, port, prefs)))),
     )
 }

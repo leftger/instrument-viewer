@@ -32,11 +32,30 @@ nc -z -v 169.254.6.252 4000
 cargo run --release
 ```
 
-**Connect**, then **Fetch**, or tick **Auto**. **CSV** / **JSON** save the traces
-currently on the plot (no extra traffic to the scope). Auto captures every 2 seconds by
-default; the spinner next to it sets the interval (0.5–30 s). The slow default is
-deliberate — see the quirks section. Auto switches itself off on any error rather
-than retrying into a struggling instrument.
+**Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm `STOPAFTER SEQUENCE`,
+wait for the acquisition to complete, then pull the curve). **CSV** / **JSON** / **PNG**
+save the traces already on the plot (JSON includes measurements and a settings
+snapshot; **Wide** writes `t,CH1,CH2,…`). **Cursors**: left-click sets A, right-click
+or Shift-click sets B; the bar under the plot shows Δt and 1/Δt.
+
+The **View** row controls the plot:
+
+- **Autoscale** refits both axes on every capture. Any manual zoom, scroll, or drag
+  switches it off so the view stops jumping; **Fit now** is a one-shot refit.
+- **Zoom axes X / Y** choose which axes zoom. Untick **X** to zoom vertically only —
+  a Mac trackpad pinch is uniform, so this is how you get vertical-only zoom.
+- **−** / **+** zoom the enabled axes; **−Y** / **+Y** always zoom vertically.
+- **Scroll zooms** (default on) makes two-finger scroll zoom the enabled axes.
+  Turn it off to pan with scroll instead.
+- Drag pans, right-drag is a box zoom, and double-click resets.
+
+Host, port, Auto interval, Wide CSV, and Scroll-zooms are remembered in
+`~/.config/mdo-viewer/prefs`. `--host` / `--port` on the command line override the
+saved address.
+
+Auto captures every 2 seconds by default; the spinner next to it sets the interval
+(0.5–30 s). The slow default is deliberate — see the quirks section. Auto switches
+itself off on any error rather than retrying into a struggling instrument.
 
 The left panel reads the current front-panel state and controls:
 
@@ -101,7 +120,9 @@ cargo run --release -- autoset
 
 # Waveform export (one fetch, then disconnect). Format follows --out suffix.
 cargo run --release -- export --out capture.csv
+cargo run --release -- export --wide --out capture.csv
 cargo run --release -- export --format json --out capture.json --channels CH1,CH2
+cargo run --release -- export --sequence --out shot.json
 ```
 
 Run `cargo run --release -- <subcommand> --help` for the accepted values. Passive
