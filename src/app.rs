@@ -7,6 +7,7 @@ use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
 use crate::config::{ConfigSection, InstrumentConfig};
 use crate::export::ExportOptions;
 use crate::measure;
+use crate::plotdata;
 use crate::prefs::{self, Prefs};
 use crate::waveform::{demo_trace, ChannelTrace};
 use crate::worker::{Cmd, Msg, Worker};
@@ -47,6 +48,8 @@ pub struct ViewerApp {
     /// Zoom factor queued by the toolbar buttons, applied inside the plot.
     zoom_request: Option<egui::Vec2>,
     fit_request: bool,
+    /// Points actually sent to the plot last frame, after decimation.
+    drawn_points: usize,
     worker: Worker,
 }
 
@@ -80,6 +83,7 @@ impl ViewerApp {
             scroll_zooms: prefs.scroll_zooms,
             zoom_request: None,
             fit_request: false,
+            drawn_points: 0,
             worker,
         }
     }
@@ -287,6 +291,14 @@ impl ViewerApp {
                                 }
                             }
                         });
+                    }
+                    let raw: usize = self.traces.iter().map(|t| t.points.len()).sum();
+                    if raw > 0 {
+                        ui.label(format!("plotted {} / {raw} pts", self.drawn_points))
+                            .on_hover_text(
+                                "Traces are min/max reduced to the plot width; \
+                                 peaks are preserved and exports use full resolution.",
+                            );
                     }
                 });
             });
@@ -534,13 +546,14 @@ impl eframe::App for ViewerApp {
             } else {
                 0.0
             };
-            let scroll_factor = (scroll != 0.0)
-                .then(|| axis_factor((scroll * 0.004).exp(), axes));
+            let scroll_factor = (scroll != 0.0).then(|| axis_factor((scroll * 0.004).exp(), axes));
             if zoom_request.is_some() || scroll_factor.is_some() {
                 self.auto_fit = false;
             }
             let do_fit = fit_request || self.auto_fit;
             let mut dragged = false;
+            let width_px = ui.available_width() as f64;
+            let mut drawn = 0usize;
             Plot::new("mdo")
                 .legend(Legend::default())
                 .x_axis_label(x_unit)
@@ -551,9 +564,23 @@ impl eframe::App for ViewerApp {
                 // Manual scroll handling below, so the wheel can zoom per axis.
                 .allow_scroll(!self.scroll_zooms)
                 .show(ui, |plot_ui| {
+                    // Last frame's bounds; good enough to size this frame's detail.
+                    let visible = plot_ui.plot_bounds();
+                    let visible_span = visible.max()[0] - visible.min()[0];
                     for trace in &self.traces {
-                        let pts = PlotPoints::from_iter(trace.points.iter().map(|p| [p[0], p[1]]));
-                        plot_ui.line(Line::new(trace.channel.clone(), pts));
+                        let full_span = match (trace.points.first(), trace.points.last()) {
+                            (Some(a), Some(b)) => b[0] - a[0],
+                            _ => 0.0,
+                        };
+                        let target = plotdata::target_points(
+                            width_px,
+                            full_span,
+                            visible_span,
+                            trace.points.len(),
+                        );
+                        let reduced = plotdata::decimate(&trace.points, target);
+                        drawn += reduced.len();
+                        plot_ui.line(Line::new(trace.channel.clone(), PlotPoints::from(reduced)));
                     }
                     if self.cursors_on {
                         if let Some(t) = self.cursor_a {
@@ -583,6 +610,7 @@ impl eframe::App for ViewerApp {
                             resp.secondary_clicked() || resp.ctx.input(|i| i.modifiers.shift);
                     }
                 });
+            self.drawn_points = drawn;
             if dragged {
                 self.auto_fit = false;
             }
@@ -848,10 +876,7 @@ impl ViewerApp {
 
 /// Apply a scalar zoom only to the axes the user left enabled.
 fn axis_factor(k: f32, axes: egui::Vec2b) -> egui::Vec2 {
-    egui::Vec2::new(
-        if axes.x { k } else { 1.0 },
-        if axes.y { k } else { 1.0 },
-    )
+    egui::Vec2::new(if axes.x { k } else { 1.0 }, if axes.y { k } else { 1.0 })
 }
 
 fn write_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), String> {

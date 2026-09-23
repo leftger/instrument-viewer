@@ -49,6 +49,13 @@ The **View** row controls the plot:
   Turn it off to pan with scroll instead.
 - Drag pans, right-drag is a box zoom, and double-click resets.
 
+Traces are min/max reduced to about two points per pixel column before plotting,
+and the reduction relaxes as you zoom in. `egui_plot` transforms and tessellates
+every point it is given on every frame with no culling, so handing it two raw
+10k-point records made a maximized window redraw too slowly to respond. Peaks
+survive the reduction, and measurements and exports always use full resolution.
+The bar under the plot shows plotted-versus-captured point counts.
+
 Host, port, Auto interval, Wide CSV, and Scroll-zooms are remembered in
 `~/.config/mdo-viewer/prefs`. `--host` / `--port` on the command line override the
 saved address.
