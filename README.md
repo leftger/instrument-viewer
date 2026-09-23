@@ -42,6 +42,11 @@ The **View** row controls the plot:
 
 - **Autoscale** refits both axes on every capture. Any manual zoom, scroll, or drag
   switches it off so the view stops jumping; **Fit now** is a one-shot refit.
+- **Stack** gives each channel its own band, scaled to that channel's own min and
+  max, so a 50 mV ripple is as tall as a 5 V square wave instead of a flat line
+  next to it. The y axis then labels bands by channel rather than volts; hover a
+  trace to read the real value, and the cursor and measurement readouts under the
+  plot stay in volts either way.
 - **Zoom axes X / Y** choose which axes zoom. Untick **X** to zoom vertically only —
   a Mac trackpad pinch is uniform, so this is how you get vertical-only zoom.
 - **−** / **+** zoom the enabled axes; **−Y** / **+Y** always zoom vertically.

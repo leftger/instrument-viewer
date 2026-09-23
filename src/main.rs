@@ -7,6 +7,7 @@ mod measure;
 mod plotdata;
 mod prefs;
 mod scpi;
+mod stack;
 mod waveform;
 mod worker;
 

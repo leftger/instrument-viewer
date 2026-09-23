@@ -2,13 +2,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
-use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
+use egui_plot::{GridMark, Legend, Line, Plot, PlotPoints, VLine};
 
 use crate::config::{ConfigSection, InstrumentConfig};
 use crate::export::ExportOptions;
 use crate::measure;
 use crate::plotdata;
 use crate::prefs::{self, Prefs};
+use crate::stack;
 use crate::waveform::{demo_trace, ChannelTrace};
 use crate::worker::{Cmd, Msg, Worker};
 
@@ -22,6 +23,9 @@ pub struct ViewerApp {
     config: Option<InstrumentConfig>,
     selected_channel: usize,
     traces: Vec<ChannelTrace>,
+    /// Stacked-view placement, one per trace. Kept with the traces rather than
+    /// rebuilt per frame: it costs a pass over every captured sample.
+    lanes: Vec<stack::Lane>,
     auto: bool,
     /// Seconds between automatic captures. Deliberately unhurried: this
     /// instrument does not like being pushed.
@@ -46,6 +50,9 @@ pub struct ViewerApp {
     pending_png: Option<PathBuf>,
     /// Rescale to the data on every frame, so each capture fits the window.
     auto_fit: bool,
+    /// Give each channel its own band and its own gain instead of sharing one
+    /// volts axis.
+    stacked: bool,
     zoom_x: bool,
     zoom_y: bool,
     /// Wheel/two-finger scroll zooms instead of panning. Mac trackpads have no
@@ -63,14 +70,16 @@ impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, host: String, port: u16, prefs: Prefs) -> Self {
         let ctx = cc.egui_ctx.clone();
         let worker = Worker::spawn(move || ctx.request_repaint());
+        let traces = vec![demo_trace("CH1")];
         Self {
+            lanes: stack::lanes(&traces),
             host,
             port: port.to_string(),
             status: "Not connected.".into(),
             idn: None,
             config: None,
             selected_channel: 0,
-            traces: vec![demo_trace("CH1")],
+            traces,
             auto: false,
             auto_interval: prefs.auto_interval,
             pending: false,
@@ -87,6 +96,7 @@ impl ViewerApp {
             cursor_b: None,
             pending_png: None,
             auto_fit: true,
+            stacked: false,
             zoom_x: true,
             zoom_y: true,
             scroll_zooms: prefs.scroll_zooms,
@@ -105,6 +115,11 @@ impl ViewerApp {
             csv_wide: self.csv_wide,
             scroll_zooms: self.scroll_zooms,
         });
+    }
+
+    fn set_traces(&mut self, traces: Vec<ChannelTrace>) {
+        self.lanes = stack::lanes(&traces);
+        self.traces = traces;
     }
 
     fn addr(&self) -> String {
@@ -340,7 +355,7 @@ impl ViewerApp {
                     self.pending = false;
                     let n: usize = t.iter().map(|x| x.points.len()).sum();
                     self.status = format!("{n} samples across {} channel(s)", t.len());
-                    self.traces = t;
+                    self.set_traces(t);
                 }
                 Msg::Config(config) => {
                     self.pending = false;
@@ -483,7 +498,8 @@ impl eframe::App for ViewerApp {
                 });
 
                 if ui.button("Demo").clicked() {
-                    self.traces = self.selected().iter().map(|c| demo_trace(c)).collect();
+                    let demo = self.selected().iter().map(|c| demo_trace(c)).collect();
+                    self.set_traces(demo);
                     self.status = "Demo waveform (no instrument).".into();
                 }
 
@@ -530,6 +546,18 @@ impl eframe::App for ViewerApp {
                     self.auto_fit = !self.auto_fit;
                 }
                 if ui.button("Fit now").clicked() {
+                    self.fit_request = true;
+                }
+                if ui
+                    .selectable_label(self.stacked, "Stack")
+                    .on_hover_text(
+                        "One band per channel, each scaled to its own min/max, \
+                         so a small signal is as tall as a large one",
+                    )
+                    .clicked()
+                {
+                    self.stacked = !self.stacked;
+                    // The y range changes completely; the old view would be off-screen.
                     self.fit_request = true;
                 }
                 ui.separator();
@@ -599,57 +627,105 @@ impl eframe::App for ViewerApp {
             let mut dragged = false;
             let width_px = ui.available_width() as f64;
             let mut drawn = 0usize;
-            Plot::new("mdo")
+            let lanes: &[stack::Lane] = if self.stacked { &self.lanes } else { &[] };
+            let names: Vec<String> = self.traces.iter().map(|t| t.channel.clone()).collect();
+            let mut plot = Plot::new("mdo")
                 .legend(Legend::default())
                 .x_axis_label(x_unit)
-                .y_axis_label(y_unit)
                 .allow_zoom(axes)
                 .allow_drag(true)
                 .allow_boxed_zoom(true)
                 // Manual scroll handling below, so the wheel can zoom per axis.
-                .allow_scroll(!self.scroll_zooms)
-                .show(ui, |plot_ui| {
-                    // Last frame's bounds; good enough to size this frame's detail.
-                    let visible = plot_ui.plot_bounds();
-                    for trace in &self.traces {
-                        let reduced = plotdata::prepare(
-                            &trace.points,
-                            visible.min()[0],
-                            visible.max()[0],
-                            width_px,
-                            !do_fit,
-                        );
-                        drawn += reduced.len();
-                        plot_ui.line(Line::new(trace.channel.clone(), PlotPoints::from(reduced)));
-                    }
-                    if self.cursors_on {
-                        if let Some(t) = self.cursor_a {
-                            plot_ui.vline(VLine::new("A", t));
+                .allow_scroll(!self.scroll_zooms);
+            if lanes.is_empty() {
+                plot = plot.y_axis_label(y_unit);
+            } else {
+                // Stacked y values are lane positions, not volts, so label the
+                // bands by channel and translate hovered points back.
+                plot = plot
+                    .y_axis_label(format!("{y_unit} (per channel)"))
+                    .y_grid_spacer(|_| {
+                        (0..lanes.len())
+                            .map(|i| GridMark {
+                                value: lanes[i].center,
+                                step_size: 1.0,
+                            })
+                            .collect()
+                    })
+                    .y_axis_formatter(|mark, _| {
+                        match lanes
+                            .iter()
+                            .position(|l| (l.center - mark.value).abs() < 1e-9)
+                        {
+                            Some(i) => names[i].clone(),
+                            None => String::new(),
                         }
-                        if let Some(t) = self.cursor_b {
-                            plot_ui.vline(VLine::new("B", t));
+                    })
+                    .label_formatter(|name, point| {
+                        let t = measure::format_si(point.x, x_unit);
+                        let lane = names
+                            .iter()
+                            .position(|n| n == name)
+                            .or_else(|| stack::nearest(lanes, point.y));
+                        let Some(i) = lane else {
+                            return t;
+                        };
+                        let v = measure::format_si(lanes[i].value(point.y), y_unit);
+                        if name.is_empty() {
+                            format!("{t}\n{v}")
+                        } else {
+                            format!("{name}\n{t}\n{v}")
+                        }
+                    });
+            }
+            plot.show(ui, |plot_ui| {
+                // Last frame's bounds; good enough to size this frame's detail.
+                let visible = plot_ui.plot_bounds();
+                for (i, trace) in self.traces.iter().enumerate() {
+                    let mut reduced = plotdata::prepare(
+                        &trace.points,
+                        visible.min()[0],
+                        visible.max()[0],
+                        width_px,
+                        !do_fit,
+                    );
+                    drawn += reduced.len();
+                    // Decimation runs on volts so every channel keeps its own
+                    // peaks; the lane map is affine and preserves their order.
+                    if let Some(lane) = lanes.get(i) {
+                        for p in reduced.iter_mut() {
+                            p[1] = lane.plot_y(p[1]);
                         }
                     }
+                    plot_ui.line(Line::new(trace.channel.clone(), PlotPoints::from(reduced)));
+                }
+                if self.cursors_on {
+                    if let Some(t) = self.cursor_a {
+                        plot_ui.vline(VLine::new("A", t));
+                    }
+                    if let Some(t) = self.cursor_b {
+                        plot_ui.vline(VLine::new("B", t));
+                    }
+                }
 
-                    if do_fit {
-                        plot_ui.set_auto_bounds(true);
-                    }
-                    if let Some(factor) = zoom_request {
-                        let center = plot_ui.plot_bounds().center();
-                        plot_ui.zoom_bounds(factor, center);
-                    }
-                    if let Some(factor) = scroll_factor {
-                        plot_ui.zoom_bounds_around_hovered(factor);
-                    }
+                if do_fit {
+                    plot_ui.set_auto_bounds(true);
+                }
+                if let Some(factor) = zoom_request {
+                    let center = plot_ui.plot_bounds().center();
+                    plot_ui.zoom_bounds(factor, center);
+                }
+                if let Some(factor) = scroll_factor {
+                    plot_ui.zoom_bounds_around_hovered(factor);
+                }
 
-                    let resp = plot_ui.response();
-                    dragged = resp.dragged();
-                    if resp.clicked() || resp.secondary_clicked() {
-                        clicked = plot_ui.pointer_coordinate().map(|p| p.x);
-                        secondary =
-                            resp.secondary_clicked() || resp.ctx.input(|i| i.modifiers.shift);
-                    }
-                });
+                let resp = plot_ui.response();
+                dragged = resp.dragged();
+                if resp.clicked() || resp.secondary_clicked() {
+                    clicked = plot_ui.pointer_coordinate().map(|p| p.x);
+                    secondary = resp.secondary_clicked() || resp.ctx.input(|i| i.modifiers.shift);
+                }
+            });
             self.drawn_points = drawn;
             if dragged {
                 self.auto_fit = false;
