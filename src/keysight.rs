@@ -164,9 +164,8 @@ impl KeysightPsu {
 
     fn select(&self, s: &mut ScpiSession, n: usize) -> Result<&Output, ScpiError> {
         let out = self.output(n)?;
-        match self.profile.dialect {
-            Dialect::E36200 => s.write(&format!("INST:NSEL {}", out.inst))?,
-            Dialect::E3631 => s.write(&format!("INST:SEL {}", out.inst))?,
+        if let Some(command) = select_command(&self.profile, out) {
+            s.write(&command)?;
         }
         Ok(out)
     }
@@ -177,6 +176,19 @@ impl KeysightPsu {
         let i = query_f64(s, "MEAS:CURR?")?;
         Ok((v, i))
     }
+}
+
+/// Single-output supplies have no `INSTrument` subsystem: an E36231A answers
+/// `INST:NSEL 1`, `INST?` and `INST:SEL?` with `-113,"Undefined header"` and
+/// beeps `!Err`. Only the multi-output models are selectable.
+fn select_command(profile: &Profile, out: &Output) -> Option<String> {
+    if profile.outputs.len() < 2 {
+        return None;
+    }
+    Some(match profile.dialect {
+        Dialect::E36200 => format!("INST:NSEL {}", out.inst),
+        Dialect::E3631 => format!("INST:SEL {}", out.inst),
+    })
 }
 
 fn profile_for_model(model: &str) -> Profile {
@@ -426,9 +438,8 @@ pub fn apply_channel(
         .outputs
         .get(n.wrapping_sub(1))
         .ok_or_else(|| ScpiError::Unsupported(format!("PSU has no output {n}")))?;
-    match profile.dialect {
-        Dialect::E36200 => session.write(&format!("INST:NSEL {}", out.inst))?,
-        Dialect::E3631 => session.write(&format!("INST:SEL {}", out.inst))?,
+    if let Some(command) = select_command(&profile, out) {
+        session.write(&command)?;
     }
     let volt = ch.scale.clamp(out.min_v, out.max_v);
     let curr = ch.offset.abs().clamp(0.0, out.max_a);
@@ -559,6 +570,22 @@ mod tests {
         let triple = from_idn("Agilent Technologies,E3631A,0,2.0");
         assert_eq!(triple.kind(), InstrumentKind::Supply);
         assert_eq!(triple.capabilities().channel_count, 3);
+    }
+
+    #[test]
+    fn only_multi_output_supplies_are_selectable() {
+        let single = profile_for_model("E36231A");
+        assert_eq!(select_command(&single, &single.outputs[0]), None);
+        let dual = profile_for_model("E36233A");
+        assert_eq!(
+            select_command(&dual, &dual.outputs[1]),
+            Some("INST:NSEL 2".into())
+        );
+        let triple = profile_for_model("E3631A");
+        assert_eq!(
+            select_command(&triple, &triple.outputs[2]),
+            Some("INST:SEL N25V".into())
+        );
     }
 
     #[test]
