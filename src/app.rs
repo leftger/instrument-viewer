@@ -28,6 +28,7 @@ pub struct ViewerApp {
     config: Option<InstrumentConfig>,
     selected_channel: usize,
     traces: Vec<ChannelTrace>,
+    captured_at: Option<crate::timestamp::CaptureTime>,
     /// Stacked-view placement, one per trace. Kept with the traces rather than
     /// rebuilt per frame: it costs a pass over every captured sample.
     lanes: Vec<stack::Lane>,
@@ -92,6 +93,7 @@ impl ViewerApp {
             config: None,
             selected_channel: 0,
             traces,
+            captured_at: None,
             auto: false,
             auto_interval: prefs.auto_interval,
             pending: false,
@@ -199,11 +201,12 @@ impl ViewerApp {
             csv_wide: self.csv_wide,
             cursor_a: self.cursor_a.filter(|_| self.cursors_on),
             cursor_b: self.cursor_b.filter(|_| self.cursors_on),
+            captured_at: self.captured_at.as_ref(),
         }
     }
 
     fn export_traces(&mut self, format: crate::export::ExportFormat) {
-        let name = crate::export::capture_filename(format.extension());
+        let name = crate::export::capture_filename(format.extension(), self.captured_at.as_ref());
         let mut dialog = rfd::FileDialog::new().set_file_name(&name);
         dialog = match format {
             crate::export::ExportFormat::Csv => dialog.add_filter("CSV", &["csv"]),
@@ -230,7 +233,10 @@ impl ViewerApp {
 
     fn request_png(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name(&crate::export::capture_filename("png"))
+            .set_file_name(&crate::export::capture_filename(
+                "png",
+                self.captured_at.as_ref(),
+            ))
             .add_filter("PNG", &["png"])
             .save_file()
         else {
@@ -391,9 +397,14 @@ impl ViewerApp {
                     self.last_status_poll = 0.0;
                     self.status_poll_retry_at = 0.0;
                     self.status = "Disconnected.".into();
+                    self.captured_at = None;
                 }
-                Msg::Traces(t) => {
+                Msg::Traces {
+                    traces: t,
+                    captured_at,
+                } => {
                     self.pending = false;
+                    self.captured_at = Some(captured_at);
                     let n: usize = t.iter().map(|x| x.points.len()).sum();
                     self.status = format!("{n} samples across {} channel(s)", t.len());
                     self.set_traces(t);

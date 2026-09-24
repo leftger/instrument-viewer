@@ -32,7 +32,10 @@ pub enum Msg {
         capabilities: Box<InstrumentCapabilities>,
     },
     Disconnected,
-    Traces(Vec<ChannelTrace>),
+    Traces {
+        traces: Vec<ChannelTrace>,
+        captured_at: crate::timestamp::CaptureTime,
+    },
     Config {
         config: Box<InstrumentConfig>,
         capabilities: Box<InstrumentCapabilities>,
@@ -200,14 +203,26 @@ fn handle_fetch(
     }
     match fetch_traces(c, channels) {
         Ok(traces) => {
-            let _ = msg_tx.send(Msg::Traces(traces));
+            let captured_at =
+                crate::timestamp::CaptureTime::for_session(&mut c.session, c.backend.kind());
+            let _ = msg_tx.send(Msg::Traces {
+                traces,
+                captured_at,
+            });
         }
         Err(first_error) => {
             let _ = c.session.resync();
             thread::sleep(Duration::from_millis(150));
             match fetch_traces(c, channels) {
                 Ok(traces) => {
-                    let _ = msg_tx.send(Msg::Traces(traces));
+                    let captured_at = crate::timestamp::CaptureTime::for_session(
+                        &mut c.session,
+                        c.backend.kind(),
+                    );
+                    let _ = msg_tx.send(Msg::Traces {
+                        traces,
+                        captured_at,
+                    });
                 }
                 Err(second_error) => {
                     let _ = c.session.resync();

@@ -13,6 +13,7 @@ mod scpi;
 mod siglent;
 mod stack;
 mod tek;
+mod timestamp;
 mod usbtmc;
 mod waveform;
 mod worker;

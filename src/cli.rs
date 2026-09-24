@@ -347,6 +347,8 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             for ch in &channels {
                 traces.push(backend.fetch_channel(&mut session, ch)?);
             }
+            let captured_at =
+                crate::timestamp::CaptureTime::for_session(&mut session, backend.kind());
             let body = export::render(&export::ExportOptions {
                 traces: &traces,
                 idn: Some(&idn),
@@ -355,6 +357,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                 csv_wide: *wide,
                 cursor_a: None,
                 cursor_b: None,
+                captured_at: Some(&captured_at),
             });
             match out {
                 Some(path) => {
@@ -578,7 +581,7 @@ pub fn selftest(
                 Msg::AcquisitionStatus(None) => {
                     return Err("acquisition status poll failed".into());
                 }
-                Msg::Traces(t) => {
+                Msg::Traces { traces: t, .. } => {
                     fetched = true;
                     let n: usize = t.iter().map(|x| x.points.len()).sum();
                     println!("  [{:>8.0?}] {n} samples", started.elapsed());

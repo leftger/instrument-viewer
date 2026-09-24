@@ -22,12 +22,11 @@ impl ExportFormat {
 }
 
 /// Default save-dialog name: `mdo-capture-YYYYMMDD-HHMMSS.<ext>`.
-pub fn capture_filename(ext: &str) -> String {
-    format!(
-        "mdo-capture-{}.{}",
-        chrono::Local::now().format("%Y%m%d-%H%M%S"),
-        ext
-    )
+pub fn capture_filename(ext: &str, captured: Option<&crate::timestamp::CaptureTime>) -> String {
+    let stamp = captured
+        .map(|c| c.filename_stamp())
+        .unwrap_or_else(|| crate::timestamp::CaptureTime::host_now().filename_stamp());
+    format!("mdo-capture-{stamp}.{ext}")
 }
 
 pub struct ExportOptions<'a> {
@@ -38,6 +37,7 @@ pub struct ExportOptions<'a> {
     pub csv_wide: bool,
     pub cursor_a: Option<f64>,
     pub cursor_b: Option<f64>,
+    pub captured_at: Option<&'a crate::timestamp::CaptureTime>,
 }
 
 /// CSV is long-form `channel,t,v` or wide `t,CH1,CH2,…`. JSON includes
@@ -105,6 +105,14 @@ fn write_csv_comments(out: &mut String, opts: &ExportOptions<'_>) {
     if let Some(idn) = opts.idn {
         let _ = writeln!(out, "# idn={}", idn.replace('\n', " "));
     }
+    if let Some(captured) = opts.captured_at {
+        let _ = writeln!(
+            out,
+            "# captured_at={} source={}",
+            captured.iso,
+            captured.source.as_str()
+        );
+    }
     for t in opts.traces {
         let _ = writeln!(
             out,
@@ -128,6 +136,14 @@ fn json(opts: &ExportOptions<'_>) -> String {
     let mut out = String::from("{\n");
     if let Some(idn) = opts.idn {
         let _ = writeln!(out, "  \"idn\": {},", json_str(idn));
+    }
+    if let Some(captured) = opts.captured_at {
+        let _ = writeln!(out, "  \"captured_at\": {},", json_str(&captured.iso));
+        let _ = writeln!(
+            out,
+            "  \"captured_at_source\": {},",
+            json_str(captured.source.as_str())
+        );
     }
     if let (Some(a), Some(b)) = (opts.cursor_a, opts.cursor_b) {
         let dt = b - a;
@@ -284,6 +300,10 @@ mod tests {
     }
 
     fn opts(format: ExportFormat, wide: bool) -> String {
+        let captured = crate::timestamp::CaptureTime {
+            iso: "2026-09-23T20:26:03".into(),
+            source: crate::timestamp::CaptureTimeSource::Instrument,
+        };
         render(&ExportOptions {
             traces: &sample(),
             idn: Some("TEK,MDO"),
@@ -292,6 +312,7 @@ mod tests {
             csv_wide: wide,
             cursor_a: None,
             cursor_b: None,
+            captured_at: Some(&captured),
         })
     }
 
@@ -299,6 +320,7 @@ mod tests {
     fn csv_has_header_and_one_row_per_sample() {
         let text = opts(ExportFormat::Csv, false);
         assert!(text.contains("# idn=TEK,MDO"));
+        assert!(text.contains("# captured_at=2026-09-23T20:26:03 source=instrument"));
         assert!(text.contains("channel,t,v"));
         assert!(text.contains("CH1,0,1.5"));
         assert!(text.contains("CH2,0,0"));
@@ -322,6 +344,8 @@ mod tests {
     fn json_lists_each_trace_and_measurements() {
         let text = opts(ExportFormat::Json, false);
         assert!(text.contains("\"idn\": \"TEK,MDO\""));
+        assert!(text.contains("\"captured_at\": \"2026-09-23T20:26:03\""));
+        assert!(text.contains("\"captured_at_source\": \"instrument\""));
         assert!(text.contains("\"channel\": \"CH1\""));
         assert!(text.contains("[0,1.5]"));
         assert!(text.contains("\"measurements\""));
@@ -330,18 +354,16 @@ mod tests {
 
     #[test]
     fn capture_filename_includes_local_timestamp() {
-        let name = capture_filename("csv");
+        let captured = crate::timestamp::CaptureTime {
+            iso: "2026-09-23T20:26:03".into(),
+            source: crate::timestamp::CaptureTimeSource::Instrument,
+        };
+        let name = capture_filename("csv", Some(&captured));
+        assert_eq!(name, "mdo-capture-20260923-202603.csv");
+        let host = capture_filename("png", None);
         assert!(
-            name.starts_with("mdo-capture-") && name.ends_with(".csv"),
-            "{name}"
+            host.starts_with("mdo-capture-") && host.ends_with(".png"),
+            "{host}"
         );
-        let stamp = name
-            .trim_start_matches("mdo-capture-")
-            .trim_end_matches(".csv");
-        let (date, time) = stamp.split_once('-').expect(stamp);
-        assert_eq!(date.len(), 8, "{name}");
-        assert_eq!(time.len(), 6, "{name}");
-        assert!(date.chars().all(|c| c.is_ascii_digit()), "{name}");
-        assert!(time.chars().all(|c| c.is_ascii_digit()), "{name}");
     }
 }
