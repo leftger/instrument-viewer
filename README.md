@@ -1,4 +1,4 @@
-# mdo-viewer
+# instrument-viewer
 
 Rust GUI that pulls analog traces from Tektronix **MDO3000** and Rigol
 **DHO900** oscilloscopes over SCPI TCP and plots them. It also controls a
@@ -127,7 +127,7 @@ survive the reduction, and measurements and exports always use full resolution.
 The bar under the plot shows plotted-versus-captured point counts.
 
 Host, port, Auto interval, Wide CSV, and Scroll-zooms are remembered in
-`~/.config/mdo-viewer/prefs`. `--host` / `--port` on the command line override the
+`~/.config/instrument-viewer/prefs`. `--host` / `--port` on the command line override the
 saved address.
 
 Auto captures every 2 seconds by default; the spinner next to it sets the interval
@@ -179,7 +179,7 @@ cargo run --release -- selftest --cycles 25 --reconnect
 
 ## CLI control
 
-With no subcommand, `mdo-viewer` launches the GUI. All CLI commands accept global
+With no subcommand, `instrument-viewer` launches the GUI. All CLI commands accept global
 `--host` and `--port` options:
 
 ```bash

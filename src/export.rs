@@ -21,12 +21,12 @@ impl ExportFormat {
     }
 }
 
-/// Default save-dialog name: `mdo-capture-YYYYMMDD-HHMMSS.<ext>`.
+/// Default save-dialog name: `instrument-capture-YYYYMMDD-HHMMSS.<ext>`.
 pub fn capture_filename(ext: &str, captured: Option<&crate::timestamp::CaptureTime>) -> String {
     let stamp = captured
         .map(|c| c.filename_stamp())
         .unwrap_or_else(|| crate::timestamp::CaptureTime::host_now().filename_stamp());
-    format!("mdo-capture-{stamp}.{ext}")
+    format!("instrument-capture-{stamp}.{ext}")
 }
 
 pub struct ExportOptions<'a> {
@@ -359,10 +359,10 @@ mod tests {
             source: crate::timestamp::CaptureTimeSource::Instrument,
         };
         let name = capture_filename("csv", Some(&captured));
-        assert_eq!(name, "mdo-capture-20260923-202603.csv");
+        assert_eq!(name, "instrument-capture-20260923-202603.csv");
         let host = capture_filename("png", None);
         assert!(
-            host.starts_with("mdo-capture-") && host.ends_with(".png"),
+            host.starts_with("instrument-capture-") && host.ends_with(".png"),
             "{host}"
         );
     }

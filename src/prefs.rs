@@ -22,15 +22,25 @@ impl Default for Prefs {
     }
 }
 
-pub fn path() -> PathBuf {
-    let home = std::env::var_os("HOME")
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config").join("mdo-viewer").join("prefs")
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn path() -> PathBuf {
+    home_dir()
+        .join(".config")
+        .join("instrument-viewer")
+        .join("prefs")
+}
+
+fn legacy_path() -> PathBuf {
+    home_dir().join(".config").join("mdo-viewer").join("prefs")
 }
 
 pub fn load() -> Prefs {
-    let Ok(text) = fs::read_to_string(path()) else {
+    let Ok(text) = fs::read_to_string(path()).or_else(|_| fs::read_to_string(legacy_path())) else {
         return Prefs::default();
     };
     let mut prefs = Prefs::default();

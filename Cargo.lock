@@ -1703,6 +1703,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "instrument-viewer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "eframe",
+ "egui_plot",
+ "image",
+ "mdns-sd",
+ "nusb",
+ "rfd",
+ "scpi",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "io-kit-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1982,22 +1998,6 @@ dependencies = [
  "mio",
  "socket-pktinfo",
  "socket2",
-]
-
-[[package]]
-name = "mdo-viewer"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "eframe",
- "egui_plot",
- "image",
- "mdns-sd",
- "nusb",
- "rfd",
- "scpi",
- "thiserror 2.0.20",
 ]
 
 [[package]]

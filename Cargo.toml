@@ -1,5 +1,5 @@
 [package]
-name = "mdo-viewer"
+name = "instrument-viewer"
 version = "0.1.0"
 edition = "2021"
 description = "Live waveform viewer for Tektronix MDO3000 and Rigol DHO900 scopes over SCPI TCP"

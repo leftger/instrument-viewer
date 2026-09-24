@@ -55,11 +55,11 @@ fn run_gui(host: String, port: u16) -> eframe::Result<()> {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
-            .with_title("MDO viewer"),
+            .with_title("Instrument viewer"),
         ..Default::default()
     };
     eframe::run_native(
-        "MDO viewer",
+        "Instrument viewer",
         options,
         Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, host, port, prefs)))),
     )
