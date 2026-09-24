@@ -99,6 +99,9 @@ impl Backend for Rigol {
             acquisition_hint: Some(
                 "Sequence uses the native :SING command; STOPAFTER alone is ineffective.".into(),
             ),
+            kind: crate::backend::InstrumentKind::Oscilloscope,
+            channel_count: 4,
+            wave_types: Vec::new(),
         }
     }
 

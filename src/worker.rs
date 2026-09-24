@@ -13,6 +13,7 @@ use crate::waveform::ChannelTrace;
 pub enum Cmd {
     Connect { addr: String },
     Disconnect,
+    Scan,
     Fetch { channels: Vec<String> },
     FetchSequence { channels: Vec<String> },
     ReadConfig,
@@ -40,6 +41,10 @@ pub enum Msg {
     AcquisitionStatus(Option<AcquisitionStatus>),
     RawResponse(String),
     Error(String),
+    ScanDone {
+        found: Vec<crate::discover::FoundScope>,
+        notes: Vec<String>,
+    },
 }
 
 pub struct Worker {
@@ -87,7 +92,7 @@ fn split_endpoint(addr: &str) -> Option<(&str, u16)> {
 
 fn port_candidates(preferred: u16) -> Vec<u16> {
     let mut ports = vec![preferred];
-    for standard in [4000, 5555] {
+    for standard in crate::discover::SCPI_PORTS {
         if !ports.contains(&standard) {
             ports.push(standard);
         }
@@ -100,6 +105,13 @@ fn connect_with_fallback(
     msg_tx: &Sender<Msg>,
     repaint: &impl Fn(),
 ) -> Result<(ScpiSession, u16), String> {
+    if crate::usbtmc::is_usb_addr(addr) {
+        let _ = msg_tx.send(Msg::Status(format!("Connecting to {addr}…")));
+        repaint();
+        return ScpiSession::connect(addr, Duration::from_secs(6))
+            .map(|session| (session, 0))
+            .map_err(|error| format!("Connect failed: {error}"));
+    }
     let (host, preferred) =
         split_endpoint(addr).ok_or_else(|| format!("Connect failed: bad address {addr}"))?;
     let ports = port_candidates(preferred);
@@ -265,6 +277,23 @@ impl Worker {
                         let _ = msg_tx.send(Msg::Disconnected);
                         repaint();
                     }
+                    Cmd::Scan => {
+                        if connection.is_some() {
+                            let _ = msg_tx.send(Msg::Error(
+                                "Disconnect before scanning; a second session can wedge the scope"
+                                    .into(),
+                            ));
+                            repaint();
+                            continue;
+                        }
+                        let msg_progress = msg_tx.clone();
+                        let (found, notes) = crate::discover::scan(|status| {
+                            let _ = msg_progress.send(Msg::Status(status.to_string()));
+                            repaint();
+                        });
+                        let _ = msg_tx.send(Msg::ScanDone { found, notes });
+                        repaint();
+                    }
                     Cmd::Fetch { channels } => {
                         handle_fetch(&mut connection, &msg_tx, &repaint, &channels, false);
                     }
@@ -409,9 +438,10 @@ mod tests {
 
     #[test]
     fn standard_port_candidates_prefer_requested_port() {
-        assert_eq!(port_candidates(4000), vec![4000, 5555]);
-        assert_eq!(port_candidates(5555), vec![5555, 4000]);
-        assert_eq!(port_candidates(1234), vec![1234, 4000, 5555]);
+        assert_eq!(port_candidates(4000), vec![4000, 5555, 5025]);
+        assert_eq!(port_candidates(5555), vec![5555, 4000, 5025]);
+        assert_eq!(port_candidates(5025), vec![5025, 4000, 5555]);
+        assert_eq!(port_candidates(1234), vec![1234, 4000, 5555, 5025]);
     }
 
     #[test]

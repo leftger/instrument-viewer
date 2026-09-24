@@ -1,7 +1,9 @@
 # mdo-viewer
 
 Rust GUI that pulls analog traces from Tektronix **MDO3000** and Rigol
-**DHO900** oscilloscopes over SCPI TCP and plots them.
+**DHO900** oscilloscopes over SCPI TCP and plots them. It also controls a
+Siglent **SDG1032X** generator and a Keysight **E36231A** power supply (socket
+port 5025).
 
 Verified against a Tektronix MDO3024 (firmware v1.30) and a Rigol DHO924S
 (firmware 00.01.05). The backend is selected automatically from `*IDN?`.
@@ -42,11 +44,52 @@ nc -z -v <scope-ip> 5555
 cargo run --release -- --host <scope-ip> --port 5555
 ```
 
-The GUI remembers the host and port after they are entered once. If the selected
-port refuses the TCP connection, it safely tries the other standard scope port
-(4000/5555) and remembers the one that succeeds. It does not switch ports after
-TCP opens or on a timeout, avoiding extra reconnect churn on an unresponsive
-Tektronix.
+### Siglent SDG1032X
+
+The SDG is an **arbitrary waveform generator**, not a scope. LAN socket port is
+**5025** (programming guide PG02_E05C). `*IDN?` looks like
+`Siglent Technologies,SDG1032X,<serial>,<firmware>`. Scan will pick it up; Connect
+selects a generator backend so the app does not send Tektronix commands.
+
+Output on/off, wave type, frequency, amplitude (Vpp), offset, and 50 Ω/HiZ load
+are set with `C1`/`C2` `OUTP` and `BSWV`. **Fetch** plots a preview of that
+programmed wave (it does not digitise the BNCs). ARB mode is previewed as a sine.
+
+```bash
+ping -c 3 <sdg-ip>
+nc -z -v <sdg-ip> 5025
+cargo run --release -- --host <sdg-ip> --port 5025
+```
+
+### Keysight E36231A
+
+The E36231A is a **single-output 30 V / 20 A / 200 W** DC supply, not a scope.
+LAN socket port is **5025**. `*IDN?` looks like
+`Keysight Technologies,E36231A,<serial>,<firmware>`. Scan will pick it up; Connect
+selects a supply backend so the app does not send Tektronix commands.
+
+Voltage, current limit, and output on/off use `INST:NSEL 1`, `VOLT`, `CURR`, and
+`OUTP` (E3633A-compatible, E36200 programming guide). **Fetch** plots
+`MEAS:VOLT?` as a one-second DC line; measured voltage/current are shown on the
+channel panel. Dual-output E36233A/E36234A and the older triple-output E3631A
+(`APPL P6V|P25V|N25V`, same pattern as the
+[E3631A Python driver](https://github.com/psmd-iberutaru/Keysight-E3631A-Python))
+are identified the same way.
+
+```bash
+ping -c 3 <psu-ip>
+nc -z -v <psu-ip> 5025
+cargo run --release -- --host <psu-ip> --port 5025
+```
+
+The GUI remembers the host and port after they are entered once. **Scan** browses
+mDNS LXI (`_lxi._tcp`, `_scpi-raw._tcp`) and probes ARP neighbors on ports 4000,
+5555 and 5025 with `*IDN?`. It also lists **USB TMC** instruments (USB class
+`0xFE` / subclass `0x03`), probes `*IDN?` over USBTMC, and fills Host with an
+address like `usb:0699:0408:<serial>#0`. Connect opens that USBTMC interface
+(no NI-VISA). A single hit fills Host/Port; several hits appear in the
+dropdown. From the CLI: `cargo run --release -- discover`. If a LAN port
+refuses TCP, Connect tries the other standard ports (4000/5555/5025).
 
 ## Run
 
@@ -140,6 +183,9 @@ With no subcommand, `mdo-viewer` launches the GUI. All CLI commands accept globa
 `--host` and `--port` options:
 
 ```bash
+# Find scopes via mDNS LXI and ARP neighbors
+cargo run --release -- discover
+
 # Read every supported setting
 cargo run --release -- get
 
@@ -176,8 +222,8 @@ probe attenuation is converted to SCPI gain (`10x` → `PROBE:GAIN 0.1`).
 
 ## Protocol
 
-No NI-VISA, TekVISA, or USBTMC. The app uses a plain TCP client and selects an
-instrument backend after `*IDN?`.
+LAN uses a plain TCP SCPI client. USB uses USBTMC bulk transfers (not NI-VISA /
+TekVISA). The backend is selected after `*IDN?`.
 
 Tektronix transfer:
 
@@ -289,5 +335,4 @@ which the GUI presents as full instrument bandwidth or 20 MHz.
 
 ## Not implemented
 
-USB (USBTMC), digital-channel setup, non-edge triggers, and RF/spectrum controls.
-Use the rear LAN port.
+USB CDC-only gadgets (not USBTMC), digital-channel setup, non-edge triggers, and RF/spectrum controls.

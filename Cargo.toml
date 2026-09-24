@@ -13,4 +13,7 @@ egui_plot = "0.33"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
 scpi = { version = "1", default-features = false, features = ["std"] }
+mdns-sd = "0.21"
 thiserror = "2"
+nusb = "0.2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }

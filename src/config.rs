@@ -1,4 +1,4 @@
-use crate::backend::{Backend, InstrumentCapabilities};
+use crate::backend::{Backend, InstrumentCapabilities, InstrumentKind};
 use crate::scpi::{parse_bool, parse_character, parse_count, parse_f64, ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
@@ -13,6 +13,11 @@ pub struct ChannelConfig {
     /// Probe output/input transfer ratio: 0.1 means a 10x probe.
     pub probe_gain: f64,
     pub probe_type: String,
+    /// Generator wave type (`SINE`, `SQUARE`, …). Empty on scopes and supplies.
+    pub wave_type: String,
+    /// Generator frequency in Hz. Zero on oscilloscopes.
+    /// Power-supply current limit is stored in `offset`; voltage setpoint in `scale`.
+    pub frequency_hz: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +68,9 @@ pub fn include_current_values(
 ) {
     for channel in &config.channels {
         include_string(&mut capabilities.channel_couplings, &channel.coupling);
+        if !channel.wave_type.is_empty() {
+            include_string(&mut capabilities.wave_types, &channel.wave_type);
+        }
         include_number(
             &mut capabilities.terminations,
             "Instrument value",
@@ -143,6 +151,9 @@ pub fn validate_section(
                     .map(|choice| choice.value)
                     .collect::<Vec<_>>(),
             )?;
+            if !capabilities.wave_types.is_empty() {
+                require_string("wave type", &channel.wave_type, &capabilities.wave_types)?;
+            }
         }
         ConfigSection::Horizontal(horizontal) => {
             if !capabilities
@@ -226,6 +237,12 @@ pub fn read_config(
     session: &mut ScpiSession,
     backend: &dyn Backend,
 ) -> Result<InstrumentConfig, ScpiError> {
+    if backend.kind() == InstrumentKind::Generator {
+        return crate::siglent::read_config(session, backend);
+    }
+    if backend.kind() == InstrumentKind::Supply {
+        return crate::keysight::read_config(session, backend);
+    }
     let channels = [
         read_channel(session, backend, 1)?,
         read_channel(session, backend, 2)?,
@@ -277,6 +294,8 @@ fn read_channel(
         bandwidth_hz: backend.bandwidth_hz(session, number)?,
         probe_gain: query_f64(session, &format!("CH{number}:PROBE:GAIN?"))?,
         probe_type: backend.probe_type(session, number)?,
+        wave_type: String::new(),
+        frequency_hz: 0.0,
     })
 }
 
@@ -286,6 +305,12 @@ pub fn apply_section(
     section: &ConfigSection,
 ) -> Result<(), ScpiError> {
     match section {
+        ConfigSection::Channel(index, ch) if backend.kind() == InstrumentKind::Generator => {
+            crate::siglent::apply_channel(session, index + 1, ch)?;
+        }
+        ConfigSection::Channel(index, ch) if backend.kind() == InstrumentKind::Supply => {
+            crate::keysight::apply_channel(session, backend, index + 1, ch)?;
+        }
         ConfigSection::Channel(index, ch) => {
             let n = index + 1;
             // Probe gain changes the engineering units of scale/offset, so set it first.
@@ -298,6 +323,7 @@ pub fn apply_section(
             session.write(&format!("CH{n}:POSITION {}", ch.position))?;
             session.write(&format!("CH{n}:OFFSET {}", ch.offset))?;
         }
+        ConfigSection::Horizontal(_) | ConfigSection::Trigger(_) if !backend.kind().is_scope() => {}
         ConfigSection::Horizontal(h) => {
             session.write(&format!("HORIZONTAL:RECORDLENGTH {}", h.record_length))?;
             session.write(&format!("HORIZONTAL:SCALE {}", h.scale))?;
@@ -397,6 +423,8 @@ mod tests {
             bandwidth_hz: 250e6,
             probe_gain: 1.0,
             probe_type: "unknown".into(),
+            wave_type: String::new(),
+            frequency_hz: 0.0,
         };
         assert!(
             validate_section(&ConfigSection::Channel(0, channel.clone()), &capabilities).is_ok()
@@ -430,6 +458,8 @@ mod tests {
             bandwidth_hz: 123e6,
             probe_gain: 1.0,
             probe_type: "unknown".into(),
+            wave_type: String::new(),
+            frequency_hz: 0.0,
         };
         let config = InstrumentConfig {
             channels: [channel.clone(), channel.clone(), channel.clone(), channel],

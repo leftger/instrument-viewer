@@ -4,8 +4,9 @@ use std::time::Duration;
 use eframe::egui;
 use egui_plot::{GridMark, Legend, Line, Plot, PlotPoints, VLine};
 
-use crate::backend::{InstrumentCapabilities, ValueChoice};
+use crate::backend::{InstrumentCapabilities, InstrumentKind, ValueChoice};
 use crate::config::{ConfigSection, InstrumentConfig};
+use crate::discover::FoundScope;
 use crate::export::ExportOptions;
 use crate::measure;
 use crate::plotdata;
@@ -71,6 +72,8 @@ pub struct ViewerApp {
     fit_request: bool,
     /// Points actually sent to the plot last frame, after decimation.
     drawn_points: usize,
+    scanning: bool,
+    scan_results: Vec<FoundScope>,
     worker: Worker,
 }
 
@@ -116,6 +119,8 @@ impl ViewerApp {
             zoom_request: None,
             fit_request: false,
             drawn_points: 0,
+            scanning: false,
+            scan_results: Vec::new(),
             worker,
         }
     }
@@ -136,7 +141,12 @@ impl ViewerApp {
     }
 
     fn addr(&self) -> String {
-        format!("{}:{}", self.host.trim(), self.port.trim())
+        let host = self.host.trim();
+        if crate::usbtmc::is_usb_addr(host) {
+            host.to_string()
+        } else {
+            format!("{}:{}", host, self.port.trim())
+        }
     }
 
     fn selected(&self) -> Vec<String> {
@@ -193,7 +203,7 @@ impl ViewerApp {
     }
 
     fn export_traces(&mut self, format: crate::export::ExportFormat) {
-        let name = format!("mdo-capture.{}", format.extension());
+        let name = crate::export::capture_filename(format.extension());
         let mut dialog = rfd::FileDialog::new().set_file_name(&name);
         dialog = match format {
             crate::export::ExportFormat::Csv => dialog.add_filter("CSV", &["csv"]),
@@ -220,7 +230,7 @@ impl ViewerApp {
 
     fn request_png(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name("mdo-capture.png")
+            .set_file_name(&crate::export::capture_filename("png"))
             .add_filter("PNG", &["png"])
             .save_file()
         else {
@@ -423,12 +433,33 @@ impl ViewerApp {
                 }
                 Msg::Error(e) => {
                     self.pending = false;
+                    self.scanning = false;
                     self.auto = false;
                     // Reconnecting into a wedged socket server only prolongs it.
                     if e.contains("wedged") {
                         self.retry_at = now + 30.0;
                     }
                     self.status = format!("Error: {e}");
+                }
+                Msg::ScanDone { found, notes } => {
+                    self.scanning = false;
+                    self.scan_results = found;
+                    if self.scan_results.len() == 1 {
+                        let scope = &self.scan_results[0];
+                        self.host = scope.host.clone();
+                        self.port = scope.port.to_string();
+                        self.persist();
+                    }
+                    let n = self.scan_results.len();
+                    let mut status = match n {
+                        0 => "No instruments found.".into(),
+                        1 => format!("Found {}", self.scan_results[0].summary()),
+                        n => format!("Found {n} instruments."),
+                    };
+                    if !notes.is_empty() {
+                        status = format!("{status} {}", notes.join(" "));
+                    }
+                    self.status = status;
                 }
             }
         }
@@ -459,7 +490,7 @@ impl eframe::App for ViewerApp {
 
         // Heartbeat. Waking only on the worker's cross-thread repaint request
         // leaves the window looking dead if that wakeup is ever missed.
-        if self.pending || self.idn.is_some() || now < self.retry_at {
+        if self.pending || self.scanning || self.idn.is_some() || now < self.retry_at {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
 
@@ -504,9 +535,11 @@ impl eframe::App for ViewerApp {
                 let connected = self.idn.is_some();
                 ui.add_enabled_ui(!connected, |ui| {
                     ui.label("Host");
-                    ui.add(egui::TextEdit::singleline(&mut self.host).desired_width(130.0));
-                    ui.label("Port");
-                    ui.add(egui::TextEdit::singleline(&mut self.port).desired_width(50.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.host).desired_width(180.0));
+                    if !crate::usbtmc::is_usb_addr(self.host.trim()) {
+                        ui.label("Port");
+                        ui.add(egui::TextEdit::singleline(&mut self.port).desired_width(50.0));
+                    }
                 });
 
                 if !connected {
@@ -517,12 +550,49 @@ impl eframe::App for ViewerApp {
                         "Connect".to_string()
                     };
                     if ui
-                        .add_enabled(!self.pending && !cooling, egui::Button::new(label))
+                        .add_enabled(
+                            !self.pending && !self.scanning && !cooling,
+                            egui::Button::new(label),
+                        )
                         .clicked()
                     {
                         self.persist();
                         self.pending = true;
                         self.worker.send(Cmd::Connect { addr: self.addr() });
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.pending && !self.scanning && !cooling,
+                            egui::Button::new("Scan"),
+                        )
+                        .clicked()
+                    {
+                        self.scanning = true;
+                        self.status = "Scanning for instruments…".into();
+                        self.worker.send(Cmd::Scan);
+                    }
+                    if !self.scan_results.is_empty() {
+                        let current = if crate::usbtmc::is_usb_addr(self.host.trim()) {
+                            self.host.trim().to_string()
+                        } else {
+                            format!("{}:{}", self.host.trim(), self.port.trim())
+                        };
+                        let results = self.scan_results.clone();
+                        egui::ComboBox::from_id_salt("scan-results")
+                            .selected_text(current)
+                            .width(280.0)
+                            .show_ui(ui, |ui| {
+                                for scope in &results {
+                                    let selected = self.host == scope.host
+                                        && (crate::usbtmc::is_usb_addr(&scope.host)
+                                            || self.port == scope.port.to_string());
+                                    if ui.selectable_label(selected, scope.summary()).clicked() {
+                                        self.host = scope.host.clone();
+                                        self.port = scope.port.to_string();
+                                        self.persist();
+                                    }
+                                }
+                            });
                     }
                 // Always live, even mid-command: this is the way out when the
                 // instrument stops answering.
@@ -849,12 +919,17 @@ impl ViewerApp {
                     {
                         self.refresh_config();
                     }
-                    if ui
-                        .add_enabled(
-                            !self.pending && self.idn.is_some(),
-                            egui::Button::new("Autoset"),
-                        )
-                        .clicked()
+                    if self
+                        .capabilities
+                        .as_ref()
+                        .map(|c| c.kind.is_scope())
+                        .unwrap_or(true)
+                        && ui
+                            .add_enabled(
+                                !self.pending && self.idn.is_some(),
+                                egui::Button::new("Autoset"),
+                            )
+                            .clicked()
                     {
                         self.pending = true;
                         self.worker.send(Cmd::Autoset);
@@ -870,39 +945,42 @@ impl ViewerApp {
                     ui.label("Instrument capabilities unavailable.");
                     return;
                 };
-                let channel_names: Vec<String> =
-                    CHANNELS.iter().map(|value| (*value).to_string()).collect();
+                if self.selected_channel >= capabilities.channel_count {
+                    self.selected_channel = 0;
+                }
+                let channel_names: Vec<String> = CHANNELS
+                    .iter()
+                    .take(capabilities.channel_count)
+                    .map(|value| (*value).to_string())
+                    .collect();
+                let generator = capabilities.kind == InstrumentKind::Generator;
+                let supply = capabilities.kind == InstrumentKind::Supply;
+                let scope = capabilities.kind.is_scope();
 
-                egui::CollapsingHeader::new("Channels")
+                egui::CollapsingHeader::new(if scope { "Channels" } else { "Outputs" })
                     .default_open(true)
                     .show(ui, |ui| {
                         egui::ComboBox::from_label("Channel")
                             .selected_text(CHANNELS[self.selected_channel])
                             .show_ui(ui, |ui| {
-                                for (index, name) in CHANNELS.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_channel, index, *name);
+                                for (index, name) in channel_names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_channel, index, name);
                                 }
                             });
 
                         let index = self.selected_channel;
                         let ch = &mut config.channels[index];
-                        ui.checkbox(&mut ch.enabled, "Displayed / fetched");
-                        value_row(ui, "Scale (V/div)", &mut ch.scale, 0.01);
-                        value_row(ui, "Position (div)", &mut ch.position, 0.1);
-                        value_row(ui, "Offset (V)", &mut ch.offset, 0.01);
-
-                        egui::ComboBox::from_label("Coupling")
-                            .selected_text(&ch.coupling)
-                            .show_ui(ui, |ui| {
-                                for value in &capabilities.channel_couplings {
-                                    ui.selectable_value(&mut ch.coupling, value.clone(), value);
-                                }
-                            });
-
-                        let termination =
-                            numeric_choice_label(ch.termination_ohms, &capabilities.terminations);
-                        if capabilities.termination_writable {
-                            egui::ComboBox::from_label("Input")
+                        if generator {
+                            ui.checkbox(&mut ch.enabled, "Output enabled");
+                            combo_string(ui, "Wave", &mut ch.wave_type, &capabilities.wave_types);
+                            value_row(ui, "Frequency (Hz)", &mut ch.frequency_hz, 10.0);
+                            value_row(ui, "Amplitude (Vpp)", &mut ch.scale, 0.01);
+                            value_row(ui, "Offset (V)", &mut ch.offset, 0.01);
+                            let termination = numeric_choice_label(
+                                ch.termination_ohms,
+                                &capabilities.terminations,
+                            );
+                            egui::ComboBox::from_label("Load")
                                 .selected_text(termination)
                                 .show_ui(ui, |ui| {
                                     for choice in &capabilities.terminations {
@@ -913,50 +991,98 @@ impl ViewerApp {
                                         );
                                     }
                                 });
+                            if ch.termination_ohms < 1000.0 {
+                                ui.colored_label(
+                                    egui::Color32::YELLOW,
+                                    "50 Ω load halves the open-circuit amplitude.",
+                                );
+                            }
+                            if let Some(hint) = &capabilities.channel_hint {
+                                ui.small(hint);
+                            }
+                        } else if supply {
+                            ui.checkbox(&mut ch.enabled, "Output enabled");
+                            value_row(ui, "Voltage (V)", &mut ch.scale, 0.01);
+                            value_row(ui, "Current limit (A)", &mut ch.offset, 0.001);
+                            ui.label(format!("Measured: {}", ch.probe_type));
+                            if let Some(hint) = &capabilities.channel_hint {
+                                ui.small(hint);
+                            }
                         } else {
-                            ui.horizontal(|ui| {
-                                ui.label("Input");
-                                ui.add_enabled(false, egui::Label::new(termination));
-                            });
-                        }
-                        if ch.termination_ohms < 1000.0 {
-                            ui.colored_label(
-                                egui::Color32::YELLOW,
-                                "50 Ω physically loads the input; verify source voltage.",
+                            ui.checkbox(&mut ch.enabled, "Displayed / fetched");
+                            value_row(ui, "Scale (V/div)", &mut ch.scale, 0.01);
+                            value_row(ui, "Position (div)", &mut ch.position, 0.1);
+                            value_row(ui, "Offset (V)", &mut ch.offset, 0.01);
+
+                            egui::ComboBox::from_label("Coupling")
+                                .selected_text(&ch.coupling)
+                                .show_ui(ui, |ui| {
+                                    for value in &capabilities.channel_couplings {
+                                        ui.selectable_value(&mut ch.coupling, value.clone(), value);
+                                    }
+                                });
+
+                            let termination = numeric_choice_label(
+                                ch.termination_ohms,
+                                &capabilities.terminations,
                             );
-                        }
+                            if capabilities.termination_writable {
+                                egui::ComboBox::from_label("Input")
+                                    .selected_text(termination)
+                                    .show_ui(ui, |ui| {
+                                        for choice in &capabilities.terminations {
+                                            ui.selectable_value(
+                                                &mut ch.termination_ohms,
+                                                choice.value,
+                                                &choice.label,
+                                            );
+                                        }
+                                    });
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.label("Input");
+                                    ui.add_enabled(false, egui::Label::new(termination));
+                                });
+                            }
+                            if ch.termination_ohms < 1000.0 {
+                                ui.colored_label(
+                                    egui::Color32::YELLOW,
+                                    "50 Ω physically loads the input; verify source voltage.",
+                                );
+                            }
 
-                        let mut attenuation = gain_to_attenuation(ch.probe_gain);
-                        egui::ComboBox::from_label("Probe")
-                            .selected_text(format!("{attenuation}×"))
-                            .show_ui(ui, |ui| {
-                                for value in [1.0, 10.0, 100.0, 1000.0] {
-                                    ui.selectable_value(
-                                        &mut attenuation,
-                                        value,
-                                        format!("{value}×"),
-                                    );
-                                }
-                            });
-                        ch.probe_gain = 1.0 / attenuation;
-                        ui.label(format!("Detected: {}", ch.probe_type));
+                            let mut attenuation = gain_to_attenuation(ch.probe_gain);
+                            egui::ComboBox::from_label("Probe")
+                                .selected_text(format!("{attenuation}×"))
+                                .show_ui(ui, |ui| {
+                                    for value in [1.0, 10.0, 100.0, 1000.0] {
+                                        ui.selectable_value(
+                                            &mut attenuation,
+                                            value,
+                                            format!("{value}×"),
+                                        );
+                                    }
+                                });
+                            ch.probe_gain = 1.0 / attenuation;
+                            ui.label(format!("Detected: {}", ch.probe_type));
 
-                        egui::ComboBox::from_label("Bandwidth")
-                            .selected_text(numeric_choice_label(
-                                ch.bandwidth_hz,
-                                &capabilities.bandwidths,
-                            ))
-                            .show_ui(ui, |ui| {
-                                for choice in &capabilities.bandwidths {
-                                    ui.selectable_value(
-                                        &mut ch.bandwidth_hz,
-                                        choice.value,
-                                        &choice.label,
-                                    );
-                                }
-                            });
-                        if let Some(hint) = &capabilities.channel_hint {
-                            ui.small(hint);
+                            egui::ComboBox::from_label("Bandwidth")
+                                .selected_text(numeric_choice_label(
+                                    ch.bandwidth_hz,
+                                    &capabilities.bandwidths,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for choice in &capabilities.bandwidths {
+                                        ui.selectable_value(
+                                            &mut ch.bandwidth_hz,
+                                            choice.value,
+                                            &choice.label,
+                                        );
+                                    }
+                                });
+                            if let Some(hint) = &capabilities.channel_hint {
+                                ui.small(hint);
+                            }
                         }
 
                         if ui
@@ -969,84 +1095,86 @@ impl ViewerApp {
                         }
                     });
 
-                egui::CollapsingHeader::new("Horizontal")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let h = &mut config.horizontal;
-                        value_row(ui, "Time/div (s)", &mut h.scale, 1e-6);
-                        value_row(ui, "Position (%)", &mut h.position, 1.0);
-                        egui::ComboBox::from_label("Record length")
-                            .selected_text(h.record_length.to_string())
-                            .show_ui(ui, |ui| {
-                                for &value in &capabilities.record_lengths {
-                                    ui.selectable_value(
-                                        &mut h.record_length,
-                                        value,
-                                        format_count(value),
-                                    );
-                                }
-                            });
-                        if let Some(hint) = &capabilities.horizontal_hint {
-                            ui.small(hint);
-                        }
-                        if ui
-                            .add_enabled(!self.pending, egui::Button::new("Apply horizontal"))
-                            .clicked()
-                        {
-                            let section = ConfigSection::Horizontal(h.clone());
-                            self.config = Some(config.clone());
-                            self.send_config(section);
-                        }
-                    });
+                if scope {
+                    egui::CollapsingHeader::new("Horizontal")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            let h = &mut config.horizontal;
+                            value_row(ui, "Time/div (s)", &mut h.scale, 1e-6);
+                            value_row(ui, "Position (%)", &mut h.position, 1.0);
+                            egui::ComboBox::from_label("Record length")
+                                .selected_text(h.record_length.to_string())
+                                .show_ui(ui, |ui| {
+                                    for &value in &capabilities.record_lengths {
+                                        ui.selectable_value(
+                                            &mut h.record_length,
+                                            value,
+                                            format_count(value),
+                                        );
+                                    }
+                                });
+                            if let Some(hint) = &capabilities.horizontal_hint {
+                                ui.small(hint);
+                            }
+                            if ui
+                                .add_enabled(!self.pending, egui::Button::new("Apply horizontal"))
+                                .clicked()
+                            {
+                                let section = ConfigSection::Horizontal(h.clone());
+                                self.config = Some(config.clone());
+                                self.send_config(section);
+                            }
+                        });
 
-                egui::CollapsingHeader::new("Edge trigger")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let t = &mut config.trigger;
-                        combo_string(ui, "Mode", &mut t.mode, &capabilities.trigger_modes);
-                        combo_string(ui, "Source", &mut t.source, &channel_names);
-                        combo_string(ui, "Slope", &mut t.slope, &capabilities.trigger_slopes);
-                        combo_string(
-                            ui,
-                            "Coupling",
-                            &mut t.coupling,
-                            &capabilities.trigger_couplings,
-                        );
-                        value_row(ui, "Level (V)", &mut t.level, 0.01);
-                        if ui
-                            .add_enabled(!self.pending, egui::Button::new("Apply trigger"))
-                            .clicked()
-                        {
-                            let section = ConfigSection::Trigger(t.clone());
-                            self.config = Some(config.clone());
-                            self.send_config(section);
-                        }
-                    });
+                    egui::CollapsingHeader::new("Edge trigger")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            let t = &mut config.trigger;
+                            combo_string(ui, "Mode", &mut t.mode, &capabilities.trigger_modes);
+                            combo_string(ui, "Source", &mut t.source, &channel_names);
+                            combo_string(ui, "Slope", &mut t.slope, &capabilities.trigger_slopes);
+                            combo_string(
+                                ui,
+                                "Coupling",
+                                &mut t.coupling,
+                                &capabilities.trigger_couplings,
+                            );
+                            value_row(ui, "Level (V)", &mut t.level, 0.01);
+                            if ui
+                                .add_enabled(!self.pending, egui::Button::new("Apply trigger"))
+                                .clicked()
+                            {
+                                let section = ConfigSection::Trigger(t.clone());
+                                self.config = Some(config.clone());
+                                self.send_config(section);
+                            }
+                        });
 
-                egui::CollapsingHeader::new("Acquisition")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let a = &mut config.acquisition;
-                        combo_string(ui, "Mode", &mut a.mode, &capabilities.acquisition_modes);
-                        combo_string(
-                            ui,
-                            "Stop after",
-                            &mut a.stop_after,
-                            &capabilities.stop_after,
-                        );
-                        ui.checkbox(&mut a.running, "Running");
-                        if let Some(hint) = &capabilities.acquisition_hint {
-                            ui.small(hint);
-                        }
-                        if ui
-                            .add_enabled(!self.pending, egui::Button::new("Apply acquisition"))
-                            .clicked()
-                        {
-                            let section = ConfigSection::Acquisition(a.clone());
-                            self.config = Some(config.clone());
-                            self.send_config(section);
-                        }
-                    });
+                    egui::CollapsingHeader::new("Acquisition")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            let a = &mut config.acquisition;
+                            combo_string(ui, "Mode", &mut a.mode, &capabilities.acquisition_modes);
+                            combo_string(
+                                ui,
+                                "Stop after",
+                                &mut a.stop_after,
+                                &capabilities.stop_after,
+                            );
+                            ui.checkbox(&mut a.running, "Running");
+                            if let Some(hint) = &capabilities.acquisition_hint {
+                                ui.small(hint);
+                            }
+                            if ui
+                                .add_enabled(!self.pending, egui::Button::new("Apply acquisition"))
+                                .clicked()
+                            {
+                                let section = ConfigSection::Acquisition(a.clone());
+                                self.config = Some(config.clone());
+                                self.send_config(section);
+                            }
+                        });
+                }
 
                 egui::CollapsingHeader::new("Raw SCPI")
                     .default_open(false)

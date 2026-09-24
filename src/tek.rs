@@ -36,6 +36,9 @@ impl Backend for Tek {
             channel_hint: None,
             horizontal_hint: None,
             acquisition_hint: None,
+            kind: crate::backend::InstrumentKind::Oscilloscope,
+            channel_count: 4,
+            wave_types: Vec::new(),
         }
     }
 

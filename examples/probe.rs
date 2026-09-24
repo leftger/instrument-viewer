@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 #[path = "../src/scpi.rs"]
 mod scpi;
 #[allow(dead_code)]
+#[path = "../src/usbtmc.rs"]
+mod usbtmc;
+#[allow(dead_code)]
 #[path = "../src/waveform.rs"]
 mod waveform;
 

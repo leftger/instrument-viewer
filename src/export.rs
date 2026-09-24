@@ -21,6 +21,15 @@ impl ExportFormat {
     }
 }
 
+/// Default save-dialog name: `mdo-capture-YYYYMMDD-HHMMSS.<ext>`.
+pub fn capture_filename(ext: &str) -> String {
+    format!(
+        "mdo-capture-{}.{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        ext
+    )
+}
+
 pub struct ExportOptions<'a> {
     pub traces: &'a [ChannelTrace],
     pub idn: Option<&'a str>,
@@ -317,5 +326,22 @@ mod tests {
         assert!(text.contains("[0,1.5]"));
         assert!(text.contains("\"measurements\""));
         assert!(text.contains("\"pk_pk\""));
+    }
+
+    #[test]
+    fn capture_filename_includes_local_timestamp() {
+        let name = capture_filename("csv");
+        assert!(
+            name.starts_with("mdo-capture-") && name.ends_with(".csv"),
+            "{name}"
+        );
+        let stamp = name
+            .trim_start_matches("mdo-capture-")
+            .trim_end_matches(".csv");
+        let (date, time) = stamp.split_once('-').expect(stamp);
+        assert_eq!(date.len(), 8, "{name}");
+        assert_eq!(time.len(), 6, "{name}");
+        assert!(date.chars().all(|c| c.is_ascii_digit()), "{name}");
+        assert!(time.chars().all(|c| c.is_ascii_digit()), "{name}");
     }
 }

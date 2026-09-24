@@ -4,6 +4,9 @@
 #[path = "../src/scpi.rs"]
 mod scpi;
 #[allow(dead_code)]
+#[path = "../src/usbtmc.rs"]
+mod usbtmc;
+#[allow(dead_code)]
 #[path = "../src/waveform.rs"]
 mod waveform;
 
@@ -16,8 +19,14 @@ mod backend;
 #[path = "../src/config.rs"]
 mod config;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/keysight.rs"]
+mod keysight;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/rigol.rs"]
 mod rigol;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/siglent.rs"]
+mod siglent;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/tek.rs"]
 mod tek;

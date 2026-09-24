@@ -9,13 +9,21 @@ use crate::config::{
 use crate::export::{self, ExportFormat};
 use crate::scpi::ScpiSession;
 
+fn endpoint(cli: &Cli) -> String {
+    if crate::usbtmc::is_usb_addr(&cli.host) {
+        cli.host.clone()
+    } else {
+        format!("{}:{}", cli.host, cli.port)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about)]
 pub struct Cli {
-    /// Oscilloscope hostname or IP address.
+    /// USB USBTMC address (`usb:vid:pid:serial#iface`) or hostname/IP.
     #[arg(long, default_value = "169.254.6.252", global = true)]
     pub host: String,
-    /// Raw SCPI socket-server port. Tektronix MDO3000 uses 4000, Rigol DHO900 uses 5555.
+    /// Raw SCPI socket-server port. Tek 4000, Rigol 5555, Keysight/Siglent 5025.
     #[arg(long, default_value_t = 4000, global = true)]
     pub port: u16,
     #[command(subcommand)]
@@ -26,6 +34,8 @@ pub struct Cli {
 pub enum Command {
     /// Launch the graphical viewer (the default with no subcommand).
     Gui,
+    /// Browse mDNS LXI and probe ARP neighbors for SCPI instruments.
+    Discover,
     /// Print the current channel, horizontal, trigger and acquisition settings.
     Get,
     /// Send or query an arbitrary SCPI command.
@@ -210,8 +220,23 @@ enum StopAfter {
     Sequence,
 }
 
+pub fn discover() -> Result<(), Box<dyn Error>> {
+    let (found, notes) = crate::discover::scan(|msg| eprintln!("{msg}"));
+    for note in &notes {
+        eprintln!("{note}");
+    }
+    if found.is_empty() {
+        eprintln!("No SCPI instruments answered *IDN?.");
+        return Ok(());
+    }
+    for scope in found {
+        println!("{}", scope.line());
+    }
+    Ok(())
+}
+
 pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
-    let addr = format!("{}:{}", cli.host, cli.port);
+    let addr = endpoint(cli);
     let mut session = ScpiSession::connect(&addr, Duration::from_secs(6))?;
     let mut idn = session.query("*IDN?")?;
     if !idn.contains(',') {
@@ -224,12 +249,40 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
     let backend = backend.as_ref();
 
     match command {
-        Command::Gui => unreachable!("GUI is dispatched by main"),
+        Command::Gui | Command::Discover => unreachable!("dispatched by main"),
         Command::Get => {
             let c = read_config(&mut session, backend)?;
             println!("{idn}");
+            let nch = capabilities.channel_count;
             for (i, ch) in c.channels.iter().enumerate() {
-                println!(
+                if i >= nch {
+                    continue;
+                }
+                match backend.kind() {
+                    crate::backend::InstrumentKind::Generator => {
+                        println!(
+                            "C{} output={} wave={} freq={} Hz amp={} Vpp offset={} V load={} ohm",
+                            i + 1,
+                            ch.enabled,
+                            ch.wave_type,
+                            ch.frequency_hz,
+                            ch.scale,
+                            ch.offset,
+                            ch.termination_ohms
+                        );
+                    }
+                    crate::backend::InstrumentKind::Supply => {
+                        println!(
+                            "CH{} output={} volt={} V ilimit={} A {}",
+                            i + 1,
+                            ch.enabled,
+                            ch.scale,
+                            ch.offset,
+                            ch.probe_type
+                        );
+                    }
+                    crate::backend::InstrumentKind::Oscilloscope => {
+                        println!(
                     "CH{} enabled={} scale={} V/div position={} div offset={} V coupling={} input={} ohm probe={}x ({}) bandwidth={} Hz",
                     i + 1,
                     ch.enabled,
@@ -242,6 +295,8 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                     ch.probe_type,
                     ch.bandwidth_hz
                 );
+                    }
+                }
             }
             println!(
                 "Horizontal scale={} s/div position={}% record_length={}",
@@ -478,7 +533,7 @@ pub fn selftest(
     use crate::worker::{Cmd, Msg, Worker};
     use std::time::Instant;
 
-    let addr = format!("{}:{}", cli.host, cli.port);
+    let addr = endpoint(cli);
     let worker = Worker::spawn(|| {});
     let mut failures = 0;
 
@@ -528,7 +583,10 @@ pub fn selftest(
                     let n: usize = t.iter().map(|x| x.points.len()).sum();
                     println!("  [{:>8.0?}] {n} samples", started.elapsed());
                 }
-                Msg::Applied(_) | Msg::RawResponse(_) | Msg::Disconnected => {}
+                Msg::Applied(_)
+                | Msg::RawResponse(_)
+                | Msg::Disconnected
+                | Msg::ScanDone { .. } => {}
                 Msg::Error(e) => return Err(e),
             }
         }

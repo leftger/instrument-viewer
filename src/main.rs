@@ -2,14 +2,18 @@ mod app;
 mod backend;
 mod cli;
 mod config;
+mod discover;
 mod export;
+mod keysight;
 mod measure;
 mod plotdata;
 mod prefs;
 mod rigol;
 mod scpi;
+mod siglent;
 mod stack;
 mod tek;
+mod usbtmc;
 mod waveform;
 mod worker;
 
@@ -19,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::Cli::parse();
     match cli.command.as_ref() {
         None | Some(cli::Command::Gui) => run_gui(cli.host, cli.port)?,
+        Some(cli::Command::Discover) => cli::discover()?,
         Some(cli::Command::Selftest {
             cycles,
             interval,

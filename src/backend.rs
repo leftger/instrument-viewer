@@ -33,6 +33,22 @@ pub struct InstrumentCapabilities {
     pub channel_hint: Option<String>,
     pub horizontal_hint: Option<String>,
     pub acquisition_hint: Option<String>,
+    pub kind: InstrumentKind,
+    pub channel_count: usize,
+    pub wave_types: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentKind {
+    Oscilloscope,
+    Generator,
+    Supply,
+}
+
+impl InstrumentKind {
+    pub fn is_scope(self) -> bool {
+        matches!(self, Self::Oscilloscope)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,11 +122,20 @@ pub trait Backend: Send {
     fn acquisition_status(&self, s: &mut ScpiSession) -> Result<AcquisitionStatus, ScpiError>;
 
     fn autoset(&self, s: &mut ScpiSession) -> Result<(), ScpiError>;
+
+    fn kind(&self) -> InstrumentKind {
+        InstrumentKind::Oscilloscope
+    }
 }
 
 /// Pick a backend from the `*IDN?` response, defaulting to Tektronix.
 pub fn from_idn(idn: &str) -> Box<dyn Backend> {
-    if idn.to_ascii_uppercase().contains("RIGOL") {
+    let upper = idn.to_ascii_uppercase();
+    if upper.contains("SIGLENT") || upper.contains(",SDG") {
+        Box::new(crate::siglent::Siglent::from_idn(idn))
+    } else if crate::keysight::is_power_supply_idn(&upper) {
+        Box::new(crate::keysight::KeysightPsu::from_idn(idn))
+    } else if upper.contains("RIGOL") {
         Box::new(crate::rigol::Rigol::from_idn(idn))
     } else {
         Box::new(crate::tek::Tek)
@@ -143,6 +168,14 @@ mod tests {
             from_idn("TEKTRONIX,MDO3024,B020857,CF:91.1CT FV:v1.30").name(),
             "Tektronix"
         );
+        let siglent = from_idn("Siglent Technologies,SDG1032X,SDG1XBAX1R0001,1.01.01.33");
+        assert_eq!(siglent.name(), "Siglent SDG1032X");
+        assert_eq!(siglent.kind(), InstrumentKind::Generator);
+        assert_eq!(siglent.capabilities().channel_count, 2);
+        let psu = from_idn("Keysight Technologies,E36231A,MY1234,A.02.01.1631");
+        assert_eq!(psu.name(), "Keysight E36231A");
+        assert_eq!(psu.kind(), InstrumentKind::Supply);
+        assert_eq!(psu.capabilities().channel_count, 1);
         // An unreadable IDN must not lose the historically supported instrument.
         assert_eq!(from_idn("").name(), "Tektronix");
     }
