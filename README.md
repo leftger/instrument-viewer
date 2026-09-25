@@ -26,7 +26,8 @@ Siglent **SDG1032X** generator and Keysight **E36200** supplies (socket port
 | Siglent SDS1000X-E | Oscilloscope | 5025 |
 
 The backend is selected automatically from the `*IDN?` reply, so controls adapt
-to the instrument.
+to the instrument. Any instrument can also be added as a YAML profile without
+Rust code — see [Instrument profiles](profiles/README.md).
 
 ---
 
@@ -69,6 +70,7 @@ cargo run --release -- --screenshot assets/screenshot.png
 | [Instrument setup](docs/instrument-setup.md) | Per-instrument network setup, ports, discovery and connection |
 | [CLI control](docs/cli.md) | All subcommands, export formats, headless checks |
 | [Protocol & quirks](docs/protocol.md) | SCPI transfer and scaling details, Tektronix quirks, Rigol DHO900 notes |
+| [Instrument profiles](profiles/README.md) | Adding instruments as YAML without Rust code |
 
 ---
 

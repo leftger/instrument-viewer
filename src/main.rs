@@ -10,6 +10,7 @@ mod measure;
 mod plotdata;
 mod prefs;
 mod profile;
+mod registry;
 mod rigol;
 mod scpi;
 mod sds;

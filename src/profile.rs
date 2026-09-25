@@ -5,13 +5,16 @@
 //! number"* or *"write that string"*. The [`CommandTable`] captures exactly that
 //! surface as data, with `{n}` for the 1-based channel number, `{src}` for a
 //! trigger source, and `{v}` for the value being written. A backend that only
-//! differs in command spelling can be a table instead of a module; genuinely
-//! weird instruments keep hand-written `Backend` overrides.
+//! differs in command spelling can be a table (or a TOML file) instead of a
+//! module; genuinely weird instruments keep hand-written `Backend` overrides.
+
+use serde::{Deserialize, Serialize};
 
 use crate::scpi::{ScpiError, ScpiSession};
 
 /// How a query reply should be interpreted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Parse {
     /// Decimal number, optionally quoted.
     #[default]
@@ -23,49 +26,90 @@ pub enum Parse {
 }
 
 /// One queryable/writable instrument setting.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Setting {
     /// Query command template. `None` when the instrument cannot report it.
-    pub query: Option<&'static str>,
+    pub query: Option<String>,
     /// Write command template. `None` when the setting is read-only.
-    pub write: Option<&'static str>,
+    pub write: Option<String>,
     /// How the query reply should be parsed.
+    #[serde(default)]
     pub parse: Parse,
 }
 
 impl Setting {
     /// Render the query template for a 1-based channel number.
     pub fn channel_query(&self, n: usize) -> Option<String> {
-        self.query.map(|t| t.replace("{n}", &n.to_string()))
+        self.query
+            .as_ref()
+            .map(|t| t.replace("{n}", &n.to_string()))
     }
 
     /// Render the write template for a 1-based channel number and value.
     pub fn channel_write(&self, n: usize, value: &str) -> Option<String> {
         self.write
+            .as_ref()
             .map(|t| t.replace("{n}", &n.to_string()).replace("{v}", value))
     }
 
     /// Render the query template for a trigger source.
     pub fn source_query(&self, source: &str) -> Option<String> {
-        self.query.map(|t| t.replace("{src}", source))
+        self.query.as_ref().map(|t| t.replace("{src}", source))
     }
 
     /// Render the write template for a trigger source and value.
     pub fn source_write(&self, source: &str, value: &str) -> Option<String> {
         self.write
+            .as_ref()
             .map(|t| t.replace("{src}", source).replace("{v}", value))
+    }
+
+    /// Render a global (non-channel, non-source) query template.
+    pub fn plain_query(&self) -> Option<String> {
+        self.query.clone()
+    }
+
+    /// Render a global write template.
+    pub fn plain_write(&self, value: &str) -> Option<String> {
+        self.write.as_ref().map(|t| t.replace("{v}", value))
     }
 }
 
-/// The settings most instruments disagree about. Scope-style defaults in
-/// `config.rs` cover everything else for oscilloscopes.
-#[derive(Clone, Debug, Default)]
+/// The command surface an instrument profile can describe. Every field is
+/// optional; entries that are `None` are simply not served.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CommandTable {
+    // Per-channel settings.
     pub channel_enabled: Option<Setting>,
+    pub scale: Option<Setting>,
+    pub position: Option<Setting>,
+    pub offset: Option<Setting>,
+    pub coupling: Option<Setting>,
     pub termination_ohms: Option<Setting>,
     pub bandwidth_hz: Option<Setting>,
+    pub probe_gain: Option<Setting>,
     pub probe_type: Option<Setting>,
+    /// Generator wave type (`SINE`, `SQUARE`, …).
+    pub wave_type: Option<Setting>,
+    /// Generator frequency in Hz.
+    pub frequency_hz: Option<Setting>,
+    // Horizontal settings.
+    pub horizontal_scale: Option<Setting>,
+    pub horizontal_position: Option<Setting>,
+    pub record_length: Option<Setting>,
+    // Edge-trigger settings.
+    pub trigger_mode: Option<Setting>,
+    pub trigger_source: Option<Setting>,
+    pub trigger_slope: Option<Setting>,
+    pub trigger_coupling: Option<Setting>,
     pub trigger_level: Option<Setting>,
+    // Acquisition settings.
+    pub acquisition_mode: Option<Setting>,
+    pub stop_after: Option<Setting>,
+    pub running: Option<Setting>,
+    /// One-shot autoset command, write-only.
+    pub autoset: Option<Setting>,
 }
 
 impl CommandTable {
@@ -76,19 +120,23 @@ impl CommandTable {
 }
 
 /// Binary sample layout of a waveform transfer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SampleEncoding {
     /// Tektronix `RIBinary`, `DATA:WIDTH 2`: 16-bit big-endian signed.
+    #[serde(rename = "i16be")]
     I16Be,
     /// Rigol `:WAV:FORM WORD`: 16-bit little-endian unsigned.
+    #[serde(rename = "u16le")]
     U16Le,
     /// Siglent `WF? DAT2`: raw 8-bit two's-complement codes.
+    #[serde(rename = "i8")]
     I8TwosComplement,
 }
 
 /// Which preamble/scaling scheme a waveform transfer uses. Preamble parsing is
 /// vendor-specific; the sample decoding is not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PreambleKind {
     Tek,
     Rigol,
@@ -96,7 +144,7 @@ pub enum PreambleKind {
 }
 
 /// A waveform transfer, described as data so a generic fetcher can decode it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaveformFormat {
     pub encoding: SampleEncoding,
     pub preamble: PreambleKind,
@@ -121,7 +169,7 @@ impl WaveformFormat {
 /// entry, or fail with a uniform unsupported-setting error.
 pub fn table_setting(backend_name: &str, setting: Option<&Setting>) -> Result<Setting, ScpiError> {
     setting
-        .copied()
+        .cloned()
         .ok_or_else(|| ScpiError::Unsupported(format!("{backend_name} has no such setting")))
 }
 
@@ -142,7 +190,22 @@ pub fn query_channel_setting(
     Ok(reply)
 }
 
-fn validate_reply(parse: Parse, reply: &str) -> Result<(), ScpiError> {
+/// Query one global (non-channel) setting from a [`Setting`] table entry.
+pub fn query_plain_setting(
+    s: &mut ScpiSession,
+    backend_name: &str,
+    setting: Option<&Setting>,
+) -> Result<String, ScpiError> {
+    let setting = table_setting(backend_name, setting)?;
+    let cmd = setting.plain_query().ok_or_else(|| {
+        ScpiError::Unsupported(format!("{backend_name} cannot read this setting"))
+    })?;
+    let reply = s.query(&cmd)?;
+    validate_reply(setting.parse, &reply)?;
+    Ok(reply)
+}
+
+pub(crate) fn validate_reply(parse: Parse, reply: &str) -> Result<(), ScpiError> {
     match parse {
         Parse::F64 => crate::scpi::parse_f64(reply).map(|_| ()),
         Parse::Bool => crate::scpi::parse_bool(reply).map(|_| ()),
@@ -162,6 +225,20 @@ pub fn write_channel_setting(
     let cmd = setting
         .channel_write(n, value)
         .ok_or_else(|| ScpiError::Unsupported(format!("{backend_name} cannot set channel {n}")))?;
+    s.write(&cmd)
+}
+
+/// Write one global setting from a [`Setting`] table entry.
+pub fn write_plain_setting(
+    s: &mut ScpiSession,
+    backend_name: &str,
+    setting: Option<&Setting>,
+    value: &str,
+) -> Result<(), ScpiError> {
+    let setting = table_setting(backend_name, setting)?;
+    let cmd = setting
+        .plain_write(value)
+        .ok_or_else(|| ScpiError::Unsupported(format!("{backend_name} cannot set this value")))?;
     s.write(&cmd)
 }
 
@@ -205,8 +282,8 @@ mod tests {
     #[test]
     fn renders_channel_templates() {
         let setting = Setting {
-            query: Some("CH{n}:SCALE?"),
-            write: Some("CH{n}:SCALE {v}"),
+            query: Some("CH{n}:SCALE?".to_string()),
+            write: Some("CH{n}:SCALE {v}".to_string()),
             parse: Parse::F64,
         };
         assert_eq!(setting.channel_query(2).as_deref(), Some("CH2:SCALE?"));
@@ -219,8 +296,8 @@ mod tests {
     #[test]
     fn renders_source_templates() {
         let setting = Setting {
-            query: Some("TRIGGER:A:LEVEL:{src}?"),
-            write: Some("TRIGGER:A:LEVEL:{src} {v}"),
+            query: Some("TRIGGER:A:LEVEL:{src}?".to_string()),
+            write: Some("TRIGGER:A:LEVEL:{src} {v}".to_string()),
             parse: Parse::F64,
         };
         assert_eq!(
@@ -230,6 +307,20 @@ mod tests {
         assert_eq!(
             setting.source_write("CH1", "0.5").as_deref(),
             Some("TRIGGER:A:LEVEL:CH1 0.5")
+        );
+    }
+
+    #[test]
+    fn renders_plain_templates() {
+        let setting = Setting {
+            query: Some("ACQUIRE:STATE?".to_string()),
+            write: Some("ACQUIRE:STATE {v}".to_string()),
+            parse: Parse::Bool,
+        };
+        assert_eq!(setting.plain_query().as_deref(), Some("ACQUIRE:STATE?"));
+        assert_eq!(
+            setting.plain_write("ON").as_deref(),
+            Some("ACQUIRE:STATE ON")
         );
     }
 }

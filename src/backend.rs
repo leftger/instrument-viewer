@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::{ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig};
 use crate::profile::{CommandTable, WaveformFormat};
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ValueChoice {
     pub label: String,
     pub value: f64,
@@ -20,7 +22,8 @@ impl ValueChoice {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InstrumentCapabilities {
     pub channel_couplings: Vec<String>,
     pub terminations: Vec<ValueChoice>,
@@ -43,8 +46,34 @@ pub struct InstrumentCapabilities {
     pub output_pairs: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Default for InstrumentCapabilities {
+    fn default() -> Self {
+        Self {
+            channel_couplings: vec!["DC".into()],
+            terminations: vec![ValueChoice::new("1 MΩ", 1e6)],
+            termination_writable: false,
+            bandwidths: Vec::new(),
+            record_lengths: vec![1_000],
+            trigger_modes: vec!["AUTO".into()],
+            trigger_slopes: vec!["RISE".into()],
+            trigger_couplings: vec!["DC".into()],
+            acquisition_modes: vec!["SAMPLE".into()],
+            stop_after: vec!["RUNSTOP".into()],
+            channel_hint: None,
+            horizontal_hint: None,
+            acquisition_hint: None,
+            kind: InstrumentKind::Oscilloscope,
+            channel_count: 1,
+            wave_types: Vec::new(),
+            output_pairs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InstrumentKind {
+    #[default]
     Oscilloscope,
     Generator,
     Supply,
@@ -272,8 +301,15 @@ pub trait Backend: Send {
     }
 }
 
-/// Pick a backend from the `*IDN?` response, defaulting to Tektronix.
+/// Pick a backend from the `*IDN?` response.
+///
+/// Data-driven TOML profiles are consulted first, so a profile can add an
+/// instrument without Rust code. Hand-written backends follow as the fallback,
+/// defaulting to Tektronix.
 pub fn from_idn(idn: &str) -> Box<dyn Backend> {
+    if let Some(profile_backend) = crate::registry::backend_for(idn) {
+        return profile_backend;
+    }
     let upper = idn.to_ascii_uppercase();
     // Checked before the generic SIGLENT/SDG branch below: an SDS oscilloscope's
     // IDN also contains "SIGLENT", so the scope-vs-generator split must come first.

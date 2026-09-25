@@ -52,30 +52,31 @@ impl Backend for Tek {
     fn command_table(&self) -> CommandTable {
         CommandTable {
             channel_enabled: Some(Setting {
-                query: Some("SELECT:CH{n}?"),
-                write: Some("SELECT:CH{n} {v}"),
+                query: Some("SELECT:CH{n}?".to_string()),
+                write: Some("SELECT:CH{n} {v}".to_string()),
                 parse: Parse::Bool,
             }),
             termination_ohms: Some(Setting {
-                query: Some("CH{n}:TERMINATION?"),
-                write: Some("CH{n}:TERMINATION {v}"),
+                query: Some("CH{n}:TERMINATION?".to_string()),
+                write: Some("CH{n}:TERMINATION {v}".to_string()),
                 parse: Parse::F64,
             }),
             bandwidth_hz: Some(Setting {
-                query: Some("CH{n}:BANDWIDTH?"),
-                write: Some("CH{n}:BANDWIDTH {v}"),
+                query: Some("CH{n}:BANDWIDTH?".to_string()),
+                write: Some("CH{n}:BANDWIDTH {v}".to_string()),
                 parse: Parse::F64,
             }),
             probe_type: Some(Setting {
-                query: Some("CH{n}:PROBE:ID:TYPE?"),
+                query: Some("CH{n}:PROBE:ID:TYPE?".to_string()),
                 write: None,
                 parse: Parse::Character,
             }),
             trigger_level: Some(Setting {
-                query: Some("TRIGGER:A:LEVEL:{src}?"),
-                write: Some("TRIGGER:A:LEVEL:{src} {v}"),
+                query: Some("TRIGGER:A:LEVEL:{src}?".to_string()),
+                write: Some("TRIGGER:A:LEVEL:{src} {v}".to_string()),
                 parse: Parse::F64,
             }),
+            ..Default::default()
         }
     }
 
