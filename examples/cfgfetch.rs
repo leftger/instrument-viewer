@@ -1,9 +1,6 @@
 //! Temporary bisect harness: config read + fetch on one session, no worker.
 
 #[allow(dead_code)]
-#[path = "../src/profile.rs"]
-mod profile;
-#[allow(dead_code)]
 #[path = "../src/scpi.rs"]
 mod scpi;
 #[allow(dead_code)]
@@ -30,6 +27,12 @@ mod config;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/keysight.rs"]
 mod keysight;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/profile.rs"]
+mod profile;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/registry.rs"]
+mod registry;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/rigol.rs"]
 mod rigol;
