@@ -45,7 +45,11 @@ impl Dm3058 {
     }
 
     fn current_function(&self, s: &mut ScpiSession) -> Result<String, ScpiError> {
-        Ok(crate::scpi::parse_character(&s.query(":FUNC?")?))
+        // The instrument answers `:FUNC?` with its own SCPI spelling
+        // ("VOLT", "RES", …), not the app's internal names.
+        Ok(function_from_reply(&crate::scpi::parse_character(
+            &s.query(":FUNC?")?,
+        )))
     }
 
     fn reading(&self, s: &mut ScpiSession) -> Result<(String, f64), ScpiError> {
@@ -72,6 +76,27 @@ fn function_command(function: &str) -> Option<&'static str> {
         "DIOD" => ":FUNC:DIOD",
         _ => return None,
     })
+}
+
+/// Normalize a `:FUNC?` reply into the app's internal function name.
+///
+/// The guide spells DC voltage `VOLT:DC` when writing, but the instrument may
+/// answer with either `VOLT` or `VOLT:DC`, so both are accepted.
+fn function_from_reply(reply: &str) -> String {
+    match reply.trim().to_ascii_uppercase().as_str() {
+        "VOLT" | "VOLT:DC" | "VOLTAGE" | "DCV" => "DCV".into(),
+        "VOLT:AC" | "ACV" => "ACV".into(),
+        "CURR" | "CURR:DC" | "CURRENT" | "DCI" => "DCI".into(),
+        "CURR:AC" | "ACI" => "ACI".into(),
+        "RES" | "RESISTANCE" | "R2W" => "R2W".into(),
+        "FRES" | "R4W" => "R4W".into(),
+        "FREQ" => "FREQ".into(),
+        "PER" | "PERI" => "PERI".into(),
+        "CAP" => "CAP".into(),
+        "CONT" => "CONT".into(),
+        "DIOD" => "DIOD".into(),
+        other => other.to_string(),
+    }
 }
 
 fn measure_command(function: &str) -> Option<&'static str> {

@@ -8,11 +8,15 @@ mod discover;
 mod dm3058;
 mod ds1000z;
 mod dsa800;
+#[cfg(test)]
+mod e2e_tests;
 mod export;
 mod hdm3000;
 mod hrdo2000;
 mod keysight;
 mod measure;
+#[cfg(test)]
+mod mock_scpi;
 mod plotdata;
 mod prefs;
 mod profile;

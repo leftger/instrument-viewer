@@ -1,0 +1,140 @@
+# Cross-platform release packages, modelled on lightrider's build workflow.
+#
+# Push a `v*` tag to publish a release, or run this workflow manually with
+# `create_release` to draft one from the current main.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create new release draft and publish packages"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Prepare Release Version
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    if: (github.event_name == 'workflow_dispatch' && inputs.create_release) || startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get version from Tag or Default
+        id: get-version
+        run: |
+          VERSION=""
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION="0.1.0-manual-$(date +%s)"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get-version.outputs.version }}
+          name: instrument-viewer v${{ steps.get-version.outputs.version }}
+          body: |
+            Cross-platform instrument-viewer packages (SCPI viewer and control
+            for oscilloscopes, generators, supplies, multimeters, DAQs and
+            spectrum analyzers).
+
+            Each bundle holds the binary, the bundled YAML instrument profiles
+            and the README. Linux builds need a working GPU/EGL stack for the
+            window; instruments are reached over LAN SCPI or USBTMC.
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build and Package ${{ matrix.os_label }}
+    needs: [create-release]
+    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os_label: Linux
+          - os: windows-latest
+            os_label: Windows
+          - os: macos-latest
+            os_label: macOS
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --profile release --locked
+
+      - name: Package Windows Bundle
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist/instrument-viewer
+          cp target/release/instrument-viewer.exe dist/instrument-viewer/
+          cp -r assets profiles dist/instrument-viewer/
+          cp README.md LICENSE-MIT LICENSE-APACHE dist/instrument-viewer/ 2>/dev/null || true
+          cd dist && 7z a instrument-viewer-windows-x86_64.zip instrument-viewer
+
+      - name: Package Linux Bundle
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p dist/instrument-viewer
+          cp target/release/instrument-viewer dist/instrument-viewer/
+          cp -r assets profiles dist/instrument-viewer/
+          cp README.md LICENSE-MIT LICENSE-APACHE dist/instrument-viewer/ 2>/dev/null || true
+          cd dist && tar -czf instrument-viewer-linux-x86_64.tar.gz instrument-viewer
+
+      - name: Package macOS Bundle
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p dist/instrument-viewer
+          cp target/release/instrument-viewer dist/instrument-viewer/
+          cp -r assets profiles dist/instrument-viewer/
+          cp README.md LICENSE-MIT LICENSE-APACHE dist/instrument-viewer/ 2>/dev/null || true
+          ARCH=$(uname -m)
+          cd dist
+          tar -czf instrument-viewer-macos-${ARCH}.tar.gz instrument-viewer
+          if [ "$ARCH" = "arm64" ]; then
+            cp instrument-viewer-macos-arm64.tar.gz instrument-viewer-macos-aarch64.tar.gz
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrument-viewer-${{ matrix.os_label }}
+          path: dist/instrument-viewer-*.*
+
+      - name: Upload Packages to Release
+        if: needs.create-release.outputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: dist/instrument-viewer-*.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,11 @@
-# Rigol DHO900. Control plane could be YAML, but the DHO900's odd reply
+# Rigol DHO800/DHO900. Control plane could be YAML, but the DHO900's odd reply
 # formats and chunked RAW transfer still live in the `rigol` driver.
+#
+# Match narrowly: a bare "RIGOL" here would shadow the DM3058/DSA800 profiles
+# and hand a multimeter or analyzer to the scope driver. Unknown Rigol models
+# still reach the generic `rigol` driver through the built-in fallback.
 idn_matches:
-  - "RIGOL"
+  - "DHO8"
+  - "DHO9"
 name: "Rigol DHO900"
 driver: rigol

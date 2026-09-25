@@ -1,0 +1,31 @@
+# Codecov configuration for instrument-viewer.
+#
+# The crate is a GUI binary: `app.rs` is egui layout code that only runs inside
+# a live window (screenshots are the only automated check), and the transport
+# and USBTMC layers cannot be exercised without hardware. Those files are
+# excluded so the score reflects the logic that tests actually reach: the SCPI
+# session, the drivers, the config model and the exporters.
+ignore:
+  - "target/**"
+  - "assets/**"
+  - "profiles/**"
+  - "examples/**"
+  - "build.rs"
+  - "src/main.rs"
+  - "src/app.rs"
+  - "src/usbtmc.rs"
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        paths:
+          - src
+    patch:
+      default:
+        target: 60%
+        threshold: 1%
+        paths:
+          - src
