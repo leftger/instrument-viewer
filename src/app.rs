@@ -1840,4 +1840,90 @@ mod tests {
         assert_eq!(supply_capture_count(&history), 2);
         assert!(history[1].t_s > history[0].t_s);
     }
+
+    #[test]
+    fn supply_quantities_split_on_their_suffix() {
+        assert_eq!(split_supply_quantity("CH1 Voltage"), Some(("CH1", "V")));
+        assert_eq!(
+            split_supply_quantity("Output 2 Current"),
+            Some(("Output 2", "A"))
+        );
+        assert_eq!(split_supply_quantity("CH1"), None);
+        assert_eq!(split_supply_quantity("Voltage"), None);
+    }
+
+    #[test]
+    fn a_later_reading_after_the_clock_catches_up() {
+        let history = vec![SupplySample {
+            t_s: 4.0,
+            channel: "CH1".into(),
+            volts: 1.0,
+            amps: 0.0,
+        }];
+        // Elapsed time behind the last sample keeps the series increasing.
+        assert!(next_supply_time(&history, 3.0) > 4.0);
+        // A later reading uses the wall clock, and negative clocks clamp to 0.
+        assert_eq!(next_supply_time(&history, 9.0), 9.0);
+        assert_eq!(next_supply_time(&[], -5.0), 0.0);
+    }
+
+    #[test]
+    fn meter_text_formats_values_and_placeholders() {
+        assert_eq!(meter_text(1.2345, "V"), "1.2345 V");
+        assert_eq!(meter_text(f64::NAN, "A"), "— A");
+        assert_eq!(meter_text(f64::INFINITY, "A"), "— A");
+    }
+
+    #[test]
+    fn zoom_factor_respects_the_enabled_axes() {
+        let both = axis_factor(2.0, egui::Vec2b::new(true, true));
+        assert_eq!(both, egui::Vec2::new(2.0, 2.0));
+        let x_only = axis_factor(2.0, egui::Vec2b::new(true, false));
+        assert_eq!(x_only, egui::Vec2::new(2.0, 1.0));
+        let neither = axis_factor(0.5, egui::Vec2b::new(false, false));
+        assert_eq!(neither, egui::Vec2::new(1.0, 1.0));
+    }
+
+    #[test]
+    fn probe_gain_becomes_attenuation() {
+        assert_eq!(gain_to_attenuation(10.0), 0.1);
+        assert_eq!(gain_to_attenuation(0.0), 1.0);
+        assert_eq!(gain_to_attenuation(-1.0), 1.0);
+    }
+
+    #[test]
+    fn numeric_choices_match_within_rounding() {
+        let choices = vec![
+            ValueChoice::new("1 MΩ", 1e6),
+            ValueChoice::new("50 Ω", 50.0),
+        ];
+        assert_eq!(numeric_choice_label(1e6, &choices), "1 MΩ");
+        // A read-back value a few ULPs off still maps to its label.
+        assert_eq!(numeric_choice_label(1e6 + 1e-6, &choices), "1 MΩ");
+        assert_eq!(numeric_choice_label(75.0, &choices), "75");
+    }
+
+    #[test]
+    fn counts_use_the_scope_short_forms() {
+        assert_eq!(format_count(1_000_000), "1M");
+        assert_eq!(format_count(10_000_000), "10M");
+        assert_eq!(format_count(100_000), "100k");
+        assert_eq!(format_count(1_000), "1k");
+        assert_eq!(format_count(999), "999");
+    }
+
+    #[test]
+    fn screenshots_round_trip_to_png() {
+        let dir = std::env::temp_dir().join(format!("iv-png-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        let image = egui::ColorImage::filled([4, 3], egui::Color32::from_rgb(1, 2, 3));
+        write_png(&path, &image).expect("write png");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (4, 3));
+        assert_eq!(decoded.get_pixel(0, 0).0, [1, 2, 3, 255]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

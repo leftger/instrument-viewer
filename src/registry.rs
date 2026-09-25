@@ -751,41 +751,78 @@ mod tests {
     #[test]
     fn all_supported_devices_have_profiles() {
         let cases = [
-            ("TEKTRONIX,MDO3024,SN,1.0", "Tektronix"),
-            ("RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05", "Rigol DHO924S"),
+            (
+                "TEKTRONIX,MDO3024,SN,1.0",
+                "Tektronix",
+                InstrumentKind::Oscilloscope,
+            ),
+            (
+                "RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05",
+                "Rigol DHO924S",
+                InstrumentKind::Oscilloscope,
+            ),
             (
                 "RIGOL TECHNOLOGIES,MSO1104Z,DS1ZD123456789,00.04.03.SP2",
                 "Rigol MSO1104Z",
+                InstrumentKind::Oscilloscope,
             ),
             (
                 "RIGOL TECHNOLOGIES,DM3058,DM3A123456789,00.01.00",
                 "Rigol DM3058",
+                InstrumentKind::Multimeter,
             ),
             (
                 "RIGOL TECHNOLOGIES,DSA815,DSA8A123456789,00.01.17",
                 "Rigol DSA815",
+                InstrumentKind::Spectrum,
             ),
-            ("Hantek,HDM3000,HDM3A123456789,1.02", "Hantek HDM3000"),
-            ("Hantek,DAQ4000A,DQ4A123456789,1.01", "Hantek DAQ4000A"),
-            ("Hantek,HRDO2204,HRD2A123456789,202606", "Hantek HRDO2204"),
+            (
+                "Hantek,HDM3000,HDM3A123456789,1.02",
+                "Hantek HDM3000",
+                InstrumentKind::Multimeter,
+            ),
+            (
+                "Hantek,DAQ4000A,DQ4A123456789,1.01",
+                "Hantek DAQ4000A",
+                InstrumentKind::Multimeter,
+            ),
+            (
+                "Hantek,HRDO2204,HRD2A123456789,202606",
+                "Hantek HRDO2204",
+                InstrumentKind::Oscilloscope,
+            ),
             (
                 "Siglent Technologies,SSA3021X,SSA3A123456789,1.3.9.8",
                 "Siglent SSA3021X",
+                InstrumentKind::Spectrum,
             ),
-            ("Siglent Technologies,SDG1032X,SN,1.0", "Siglent SDG1032X"),
+            (
+                "Siglent Technologies,SDG1032X,SN,1.0",
+                "Siglent SDG1032X",
+                InstrumentKind::Generator,
+            ),
             (
                 "Keysight Technologies,E36233A,SN,1.1.1-1.0.3-1.01",
                 "Keysight E36233A",
+                InstrumentKind::Supply,
             ),
-            ("TEKTRONIX,AFG3051C,SN,1.0", "Tektronix AFG3051C"),
+            (
+                "TEKTRONIX,AFG3051C,SN,1.0",
+                "Tektronix AFG3051C",
+                InstrumentKind::Generator,
+            ),
             (
                 "Siglent Technologies,SDS1104X-E,SN,7.6.1.15",
                 "Siglent SDS1104X-E",
+                InstrumentKind::Oscilloscope,
             ),
         ];
-        for (idn, want) in cases {
+        for (idn, want_name, want_kind) in cases {
             let backend = crate::backend::from_idn(idn);
-            assert_eq!(backend.name(), want, "backend for {idn}");
+            assert_eq!(backend.name(), want_name, "name for {idn}");
+            // A profile whose `idn_matches` is too broad silently hands the
+            // instrument to the wrong driver; the kind catches that.
+            assert_eq!(backend.kind(), want_kind, "kind for {idn}");
         }
     }
 }

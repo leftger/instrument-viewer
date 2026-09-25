@@ -5,6 +5,7 @@
 </p>
 
 [![CI](https://github.com/leftger/instrument-viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leftger/instrument-viewer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/leftger/instrument-viewer/branch/main/graph/badge.svg)](https://codecov.io/gh/leftger/instrument-viewer)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 Rust GUI for lab instruments over SCPI, on TCP or USB **USBTMC** (no NI-VISA).
@@ -86,6 +87,7 @@ cargo run --release -- --screenshot assets/screenshot.png
 - Discovery over mDNS LXI, ARP neighbors, and USBTMC (no NI-VISA)
 - Full CLI: read/configure channels, timebase, trigger, acquisition, raw SCPI, and CSV/JSON export
 - Headless `selftest` and raw `probe` example for isolating app bugs from instrument bugs
+- Hardware-free test suite that drives a loopback mock instrument, with coverage on Codecov
 
 ---
 
@@ -97,6 +99,7 @@ cargo run --release -- --screenshot assets/screenshot.png
 | [Instrument setup](docs/instrument-setup.md) | Per-instrument network setup, ports, discovery and connection |
 | [CLI control](docs/cli.md) | All subcommands, export formats, headless checks |
 | [Protocol & quirks](docs/protocol.md) | SCPI transfer and scaling details, meter and analyzer reads, vendor quirks |
+| [Tests, coverage & releases](docs/testing.md) | Mock instrument harness, what Codecov measures, cutting a release |
 | [Instrument profiles](profiles/README.md) | Adding instruments as YAML without Rust code |
 
 ---
