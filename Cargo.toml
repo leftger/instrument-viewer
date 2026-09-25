@@ -2,7 +2,7 @@
 name = "instrument-viewer"
 version = "0.1.0"
 edition = "2021"
-description = "Live viewer for Tektronix and Rigol scopes, a Siglent generator, and Keysight E36200 supplies"
+description = "SCPI instrument viewer and control: oscilloscopes, generators, supplies, multimeters, DAQs, and spectrum analyzers"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/leftger/instrument-viewer"
 readme = "./README.md"

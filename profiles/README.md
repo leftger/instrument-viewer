@@ -86,7 +86,7 @@ Defaults are provided for every key, so list only what you want to change.
 
 ```yaml
 capabilities:
-  kind: oscilloscope        # oscilloscope | generator | supply
+  kind: oscilloscope        # oscilloscope | generator | supply | multimeter | spectrum
   channel_count: 4
   channel_couplings: [DC, AC]
   terminations:

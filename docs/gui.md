@@ -30,7 +30,7 @@ The **View** row controls the plot:
 
 The left panel reads the current front-panel state and controls. Its choices are
 provided by the detected instrument backend, so unsupported settings are hidden
-or read-only:
+or read-only. A scope shows:
 
 - CH1–CH4 enable, volts/div, position, offset, coupling, 1 MΩ/50 Ω input,
   passive-probe attenuation, and bandwidth
@@ -38,6 +38,19 @@ or read-only:
 - edge-trigger mode, source, slope, coupling, and level
 - acquisition mode, continuous/single-sequence behavior, and run/stop
 - Autoset and an advanced raw SCPI query/write console
+
+Other instrument classes get the controls that make sense for them:
+
+- **Generators** show wave type, frequency, amplitude, offset and load, and
+  **Fetch** previews the programmed wave.
+- **Supplies** show voltage and current limit per output, plus series/parallel
+  pairing; **Fetch** reads every output and graphs it against session time.
+- **Multimeters** show a function selector and turn the reading into large
+  digits; each **Fetch** takes one measurement.
+- **The DAQ4000A** scans its channel list and shows one large reading per
+  scanned channel, updating them all from a single **Fetch**.
+- **Spectrum analyzers** show center and span (**Apply span**), and plot the
+  sweep in Hz/dBm on the normal plot, so zoom, cursors and exports all work.
 
 For example, DHO900 input termination is shown as fixed 1 MΩ and its bandwidth
 choices are 20 MHz or the model's full bandwidth. Its memory-depth selector
