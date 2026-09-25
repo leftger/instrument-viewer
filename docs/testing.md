@@ -46,7 +46,12 @@ Those tests have caught real regressions:
 CI runs the same tests under source-based instrumentation and uploads the lcov
 report to [Codecov](https://codecov.io/gh/leftger/instrument-viewer) with the
 project/patch settings in [`codecov.yml`](../codecov.yml): project tracks
-`auto` within 1%, patch expects 60%.
+`auto` within 1%, patch expects 60%. The upload authenticates with the
+`CODECOV_TOKEN` repository secret (Settings → Secrets and variables → Actions);
+without it Codecov still accepts tokenless public uploads, but they are rate
+limited and reported less reliably. The job runs the test suite once — the
+summary comes from `cargo llvm-cov report`, which reuses the profile data from
+the `--lcov` run.
 
 Excluded from the score, because no test can reach them:
 
