@@ -1,0 +1,9 @@
+# Rigol DSA800 series spectrum analyzer (DSA815, DSA832, DSA875). Center/span
+# sweep control and the :TRACe:DATA? TRACE1 transfer live in the `dsa800`
+# driver; the trace plots in Hz/dBm.
+idn_matches:
+  - "DSA815"
+  - "DSA832"
+  - "DSA875"
+name: "Rigol DSA800"
+driver: dsa800

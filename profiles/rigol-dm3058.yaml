@@ -1,0 +1,6 @@
+# Rigol DM3058/DM3058E 5½-digit bench multimeter. Function selection and the
+# :MEASure:<function>? reading live in the `dm3058` driver.
+idn_matches:
+  - "DM3058"
+name: "Rigol DM3058"
+driver: dm3058
