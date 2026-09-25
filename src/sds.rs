@@ -4,9 +4,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{
     channel_number, AcquisitionStatus, Backend, InstrumentCapabilities, InstrumentKind, ValueChoice,
 };
-use crate::config::{
-    query_bool, ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig,
-};
+use crate::config::{query_bool, ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig};
 use crate::scpi::{parse_f64, ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -221,7 +219,11 @@ impl Backend for Sds {
         let raw = s.query_binary_block(&format!("C{n}:WF? DAT2"))?;
 
         let t0 = -(tdiv * GRID_DIVISIONS / 2.0);
-        let dt = if sample_rate > 0.0 { 1.0 / sample_rate } else { 0.0 };
+        let dt = if sample_rate > 0.0 {
+            1.0 / sample_rate
+        } else {
+            0.0
+        };
         let points = raw
             .iter()
             .enumerate()
@@ -417,14 +419,20 @@ pub fn apply_channel(
     }
     let attn = 1.0 / ch.probe_gain.max(1e-9);
     session.write(&format!("C{n}:ATTN {attn}"))?;
-    session.write(&format!("C{n}:CPL {}", coupling_to_wire(&ch.coupling, ch.termination_ohms)))?;
+    session.write(&format!(
+        "C{n}:CPL {}",
+        coupling_to_wire(&ch.coupling, ch.termination_ohms)
+    ))?;
     session.write(&format!("C{n}:VDIV {}", ch.scale))?;
     session.write(&format!("C{n}:OFST {}", ch.offset))?;
     session.write(&format!(
         "BWL C{n},{}",
         if ch.bandwidth_hz <= 20e6 { "ON" } else { "OFF" }
     ))?;
-    session.write(&format!("C{n}:TRA {}", if ch.enabled { "ON" } else { "OFF" }))
+    session.write(&format!(
+        "C{n}:TRA {}",
+        if ch.enabled { "ON" } else { "OFF" }
+    ))
 }
 
 fn dummy_channel() -> ChannelConfig {

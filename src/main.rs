@@ -25,7 +25,7 @@ use clap::Parser;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::Cli::parse();
     match cli.command.as_ref() {
-        None | Some(cli::Command::Gui) => run_gui(cli.host, cli.port)?,
+        None | Some(cli::Command::Gui) => run_gui(cli.host, cli.port, cli.screenshot)?,
         Some(cli::Command::Discover) => cli::discover()?,
         Some(cli::Command::Selftest {
             cycles,
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_gui(host: String, port: u16) -> eframe::Result<()> {
+fn run_gui(host: String, port: u16, screenshot: Option<std::path::PathBuf>) -> eframe::Result<()> {
     let prefs = prefs::load();
     let host = if prefs::argv_has("--host") {
         host
@@ -63,6 +63,10 @@ fn run_gui(host: String, port: u16) -> eframe::Result<()> {
     eframe::run_native(
         "Instrument viewer",
         options,
-        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, host, port, prefs)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::ViewerApp::new(
+                cc, host, port, prefs, screenshot,
+            )))
+        }),
     )
 }

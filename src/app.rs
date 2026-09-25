@@ -66,6 +66,10 @@ pub struct ViewerApp {
     cursor_a: Option<f64>,
     cursor_b: Option<f64>,
     pending_png: Option<PathBuf>,
+    /// CLI screenshot destination: render a demo trace, save the window, exit.
+    screenshot_out: Option<PathBuf>,
+    /// UI clock when the CLI screenshot was requested, for the give-up timer.
+    screenshot_requested_at: Option<f64>,
     /// Rescale to the data on every frame, so each capture fits the window.
     auto_fit: bool,
     /// Give each channel its own band and its own gain instead of sharing one
@@ -91,15 +95,26 @@ pub struct ViewerApp {
 }
 
 impl ViewerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, host: String, port: u16, prefs: Prefs) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        host: String,
+        port: u16,
+        prefs: Prefs,
+        screenshot: Option<PathBuf>,
+    ) -> Self {
         let ctx = cc.egui_ctx.clone();
         let worker = Worker::spawn(move || ctx.request_repaint());
         let traces = vec![demo_trace("CH1")];
+        let screenshot_status = if screenshot.is_some() {
+            "Demo waveform (no instrument).".into()
+        } else {
+            "Not connected.".into()
+        };
         Self {
             lanes: stack::lanes(&traces),
             host,
             port: port.to_string(),
-            status: "Not connected.".into(),
+            status: screenshot_status,
             idn: None,
             capabilities: None,
             config: None,
@@ -125,6 +140,8 @@ impl ViewerApp {
             cursor_a: None,
             cursor_b: None,
             pending_png: None,
+            screenshot_out: screenshot,
+            screenshot_requested_at: None,
             auto_fit: true,
             stacked: false,
             zoom_x: true,
@@ -275,7 +292,7 @@ impl ViewerApp {
 
     fn request_png(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name(&crate::export::capture_filename(
+            .set_file_name(crate::export::capture_filename(
                 "png",
                 self.captured_at.as_ref(),
             ))
@@ -305,6 +322,9 @@ impl ViewerApp {
         match write_png(&path, &image) {
             Ok(()) => self.status = format!("Wrote {}", path.display()),
             Err(e) => self.status = format!("PNG failed: {e}"),
+        }
+        if self.screenshot_out.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -641,6 +661,23 @@ impl eframe::App for ViewerApp {
         self.frame_ms = ctx.input(|i| i.unstable_dt) * 1000.0;
         self.pump(now);
         self.collect_screenshot(ctx);
+
+        // CLI screenshot mode: give the first frames a chance to paint, then
+        // capture the window, write the PNG (collect_screenshot), and close.
+        if let Some(path) = self.screenshot_out.clone() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            if self.screenshot_requested_at.is_none() {
+                if self.frames >= 5 {
+                    self.screenshot_requested_at = Some(now);
+                    self.pending_png = Some(path);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                }
+            } else if now - self.screenshot_requested_at.unwrap_or(now) > 5.0 {
+                // The compositor never delivered a Screenshot event; do not
+                // hang a headless invocation.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
 
         // A command whose reply never arrives must not strand the UI, so give
         // up on it rather than leaving every button disabled.

@@ -128,7 +128,12 @@ pub trait Backend: Send {
 
     /// Apply one channel's settings. Generators and supplies override this;
     /// the default writes a scope channel's coupling/termination/bandwidth/scale.
-    fn apply_channel(&self, s: &mut ScpiSession, n: usize, ch: &ChannelConfig) -> Result<(), ScpiError> {
+    fn apply_channel(
+        &self,
+        s: &mut ScpiSession,
+        n: usize,
+        ch: &ChannelConfig,
+    ) -> Result<(), ScpiError> {
         crate::config::apply_scope_channel(self, s, n, ch)
     }
 
