@@ -415,7 +415,7 @@ pub fn query_bool(session: &mut ScpiSession, command: &str) -> Result<bool, Scpi
     })
 }
 
-fn clean_enum(value: &str) -> String {
+pub(crate) fn clean_enum(value: &str) -> String {
     let value = parse_character(value);
     match value.as_str() {
         "AUT" => "AUTO",

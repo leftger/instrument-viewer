@@ -303,13 +303,18 @@ pub trait Backend: Send {
 
 /// Pick a backend from the `*IDN?` response.
 ///
-/// Data-driven TOML profiles are consulted first, so a profile can add an
+/// Data-driven YAML profiles are consulted first, so a profile can add an
 /// instrument without Rust code. Hand-written backends follow as the fallback,
 /// defaulting to Tektronix.
 pub fn from_idn(idn: &str) -> Box<dyn Backend> {
     if let Some(profile_backend) = crate::registry::backend_for(idn) {
         return profile_backend;
     }
+    from_idn_builtin(idn)
+}
+
+/// The hand-written vendor dispatch, used when no profile matches.
+fn from_idn_builtin(idn: &str) -> Box<dyn Backend> {
     let upper = idn.to_ascii_uppercase();
     // Checked before the generic SIGLENT/SDG branch below: an SDS oscilloscope's
     // IDN also contains "SIGLENT", so the scope-vs-generator split must come first.

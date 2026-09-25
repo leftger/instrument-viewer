@@ -1,0 +1,6 @@
+# Siglent SDS1000X-E oscilloscope. The CPL wire tokens, global BWL query, and
+# WF? DAT2 transfer live in the `sds` driver.
+idn_matches:
+  - "SDS"
+name: "Siglent SDS1000X-E"
+driver: sds
