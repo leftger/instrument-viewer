@@ -62,11 +62,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Measure code coverage
         run: |
+          # One instrumented run; `report` reuses its profile data, so the
+          # suite is not executed twice.
+          cargo llvm-cov --all-targets --lcov --output-path lcov.info
           echo "### 📊 Code Coverage Report" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          cargo llvm-cov --all-targets --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cargo llvm-cov --all-targets --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
