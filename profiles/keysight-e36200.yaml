@@ -1,0 +1,13 @@
+# Keysight E36200/E36300 bench supplies (E36231A/32A/33A/34A, E3631A,
+# E3633A/34A). Per-model output profiles, INST selection, and pairing live in
+# the `keysight` driver.
+idn_matches:
+  - "E36231"
+  - "E36232"
+  - "E36233"
+  - "E36234"
+  - "E3631"
+  - "E3633"
+  - "E3634"
+name: "Keysight E36200/E36300"
+driver: keysight

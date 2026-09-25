@@ -1,0 +1,6 @@
+# Rigol DHO900. Control plane could be YAML, but the DHO900's odd reply
+# formats and chunked RAW transfer still live in the `rigol` driver.
+idn_matches:
+  - "RIGOL"
+name: "Rigol DHO900"
+driver: rigol

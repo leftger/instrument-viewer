@@ -1,0 +1,6 @@
+# Tektronix AFG3000 function generator. Impedance INF handling and wave
+# preview synthesis live in the `afg` driver.
+idn_matches:
+  - "AFG3"
+name: "Tektronix AFG3000"
+driver: afg

@@ -1,0 +1,60 @@
+# Tektronix MDO3000 series. Fully data-driven: no hand-written driver needed.
+idn_matches:
+  - "TEKTRONIX,MDO3"
+name: "Tektronix"
+
+preamble:
+  - "HEADER OFF"
+  - "VERBOSE OFF"
+
+capabilities:
+  kind: oscilloscope
+  channel_count: 4
+  channel_couplings: [DC, AC, DCREJECT]
+  terminations:
+    - { label: "50 Ω", value: 50.0 }
+    - { label: "1 MΩ", value: 1000000.0 }
+  termination_writable: true
+  bandwidths:
+    - { label: "20 MHz", value: 20000000.0 }
+    - { label: "100 MHz", value: 100000000.0 }
+    - { label: "200 MHz / Full", value: 200000000.0 }
+  record_lengths: [1000, 10000, 100000, 1000000, 5000000, 10000000]
+  trigger_modes: [AUTO, NORMAL]
+  trigger_slopes: [RISE, FALL, EITHER]
+  trigger_couplings: [DC, AC, HFREJ, LFREJ, NOISEREJ]
+  acquisition_modes: [SAMPLE, PEAKDETECT, HIRES, AVERAGE, ENVELOPE]
+  stop_after: [RUNSTOP, SEQUENCE]
+
+commands:
+  channel_enabled:
+    query: "SELECT:CH{n}?"
+    write: "SELECT:CH{n} {v}"
+    parse: bool
+  scale: { query: "CH{n}:SCALE?", write: "CH{n}:SCALE {v}" }
+  position: { query: "CH{n}:POSITION?", write: "CH{n}:POSITION {v}" }
+  offset: { query: "CH{n}:OFFSET?", write: "CH{n}:OFFSET {v}" }
+  coupling: { query: "CH{n}:COUPLING?", write: "CH{n}:COUPLING {v}", parse: character }
+  termination_ohms: { query: "CH{n}:TERMINATION?", write: "CH{n}:TERMINATION {v}" }
+  bandwidth_hz: { query: "CH{n}:BANDWIDTH?", write: "CH{n}:BANDWIDTH {v}" }
+  probe_gain: { query: "CH{n}:PROBE:GAIN?", write: "CH{n}:PROBE:GAIN {v}" }
+  probe_type: { query: "CH{n}:PROBE:ID:TYPE?", parse: character }
+
+  horizontal_scale: { query: "HORIZONTAL:SCALE?", write: "HORIZONTAL:SCALE {v}" }
+  horizontal_position: { query: "HORIZONTAL:POSITION?", write: "HORIZONTAL:POSITION {v}" }
+  record_length: { query: "HORIZONTAL:RECORDLENGTH?", write: "HORIZONTAL:RECORDLENGTH {v}" }
+
+  trigger_mode: { query: "TRIGGER:A:MODE?", write: "TRIGGER:A:MODE {v}", parse: character }
+  trigger_source: { query: "TRIGGER:A:EDGE:SOURCE?", write: "TRIGGER:A:EDGE:SOURCE {v}", parse: character }
+  trigger_slope: { query: "TRIGGER:A:EDGE:SLOPE?", write: "TRIGGER:A:EDGE:SLOPE {v}", parse: character }
+  trigger_coupling: { query: "TRIGGER:A:EDGE:COUPLING?", write: "TRIGGER:A:EDGE:COUPLING {v}", parse: character }
+  trigger_level: { query: "TRIGGER:A:LEVEL:{src}?", write: "TRIGGER:A:LEVEL:{src} {v}" }
+
+  acquisition_mode: { query: "ACQUIRE:MODE?", write: "ACQUIRE:MODE {v}", parse: character }
+  stop_after: { query: "ACQUIRE:STOPAFTER?", write: "ACQUIRE:STOPAFTER {v}", parse: character }
+  running: { query: "ACQUIRE:STATE?", write: "ACQUIRE:STATE {v}", parse: bool }
+  autoset: { write: "AUTOSET EXECUTE" }
+
+waveform:
+  encoding: i16be
+  preamble: tek

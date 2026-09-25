@@ -1,0 +1,6 @@
+# Siglent SDG1000X arbitrary waveform generator. Wave preview synthesis and
+# the OUTP/BSWV reply format live in the `siglent` driver.
+idn_matches:
+  - "SDG"
+name: "Siglent SDG1000X"
+driver: siglent

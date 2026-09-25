@@ -40,10 +40,37 @@ have no write). `parse` is how the query reply is read:
 | :--- | :--- | :--- |
 | `idn_matches` | yes | Substrings matched case-insensitively against `*IDN?` |
 | `name` | yes | Display name in the GUI |
+| `driver` | no | Optional hand-written driver for deep quirks (see below) |
 | `preamble` | no | Commands re-sent on every session resync |
 | `capabilities` | no | What the GUI offers (see below) |
 | `commands` | no | The command template table (see below) |
 | `waveform` | no | Scope waveform transfer format |
+
+### `driver`
+
+A profile is normally served entirely by the generic YAML engine. When an
+instrument has reply formats or transfers too odd to express as templates, the
+profile can name one of the hand-written drivers — `tek`, `rigol`, `sds`,
+`siglent`, `afg`, or `keysight` — and every behavior method delegates to it
+while the profile remains the catalog entry. The bundled profiles use this for
+the quirkiest instruments (Rigol's chunked RAW transfer, the SDS `WF? DAT2`
+scheme, supply pairing); over time the drivers shrink as the generic engine
+grows.
+
+## Bundled device profiles
+
+Every supported instrument family has a profile in this directory:
+
+| File | Device | `driver` |
+| :--- | :--- | :--- |
+| `tek-mdo3000.yaml` | Tektronix MDO3000 | none — fully YAML |
+| `rigol-dho900.yaml` | Rigol DHO900 | `rigol` |
+| `siglent-sdg1000x.yaml` | Siglent SDG1000X | `siglent` |
+| `keysight-e36200.yaml` | Keysight E36200/E36300 supplies | `keysight` |
+| `tek-afg3000.yaml` | Tektronix AFG3000 | `afg` |
+| `siglent-sds1000x-e.yaml` | Siglent SDS1000X-E | `sds` |
+| `example.yaml` | Example Tek-like scope | none — copy me |
+
 
 ## `capabilities`
 

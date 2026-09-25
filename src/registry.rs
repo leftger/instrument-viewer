@@ -39,16 +39,28 @@ pub struct InstrumentProfile {
     pub commands: CommandTable,
     /// Waveform transfer format for scopes. Generators and supplies omit it.
     pub waveform: Option<WaveformFormat>,
+    /// Optional hand-written driver for the parts a profile cannot express yet
+    /// (odd reply formats, chunked transfers, per-model quirks). One of
+    /// `tek`, `rigol`, `sds`, `siglent`, `afg`, `keysight`.
+    #[serde(default)]
+    pub driver: Option<String>,
 }
 
-/// The `Backend` implementation driven entirely by an [`InstrumentProfile`].
+/// The `Backend` implementation driven by an [`InstrumentProfile`]. When the
+/// profile names a `driver`, every behavior method delegates to that driver
+/// (so no quirk is lost); otherwise the generic YAML engine serves everything.
 pub struct ProfileBackend {
     profile: InstrumentProfile,
+    driver: Option<Box<dyn Backend>>,
 }
 
 impl ProfileBackend {
-    pub fn new(profile: InstrumentProfile) -> Self {
-        Self { profile }
+    pub fn new(profile: InstrumentProfile, idn: &str) -> Self {
+        let driver = profile
+            .driver
+            .as_deref()
+            .and_then(|name| driver_for(name, idn));
+        Self { profile, driver }
     }
 
     fn table(&self) -> &CommandTable {
@@ -265,30 +277,51 @@ impl ProfileBackend {
 
 impl Backend for ProfileBackend {
     fn name(&self) -> &str {
-        &self.profile.name
+        self.driver
+            .as_deref()
+            .map(Backend::name)
+            .unwrap_or(&self.profile.name)
     }
 
     fn kind(&self) -> InstrumentKind {
-        self.profile.capabilities.kind
+        self.driver
+            .as_deref()
+            .map(Backend::kind)
+            .unwrap_or(self.profile.capabilities.kind)
     }
 
     fn capabilities(&self) -> InstrumentCapabilities {
-        self.profile.capabilities.clone()
+        self.driver
+            .as_deref()
+            .map(Backend::capabilities)
+            .unwrap_or_else(|| self.profile.capabilities.clone())
     }
 
     fn preamble(&self) -> Vec<String> {
-        self.profile.preamble.clone()
+        self.driver
+            .as_deref()
+            .map(Backend::preamble)
+            .unwrap_or_else(|| self.profile.preamble.clone())
     }
 
     fn command_table(&self) -> CommandTable {
-        self.profile.commands.clone()
+        self.driver
+            .as_deref()
+            .map(Backend::command_table)
+            .unwrap_or_else(|| self.profile.commands.clone())
     }
 
     fn waveform_format(&self) -> Option<WaveformFormat> {
-        self.profile.waveform
+        self.driver
+            .as_deref()
+            .and_then(Backend::waveform_format)
+            .or(self.profile.waveform)
     }
 
     fn read_config(&self, s: &mut ScpiSession) -> Result<InstrumentConfig, ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.read_config(s);
+        }
         let nch = self.profile.capabilities.channel_count;
         let mut channels = Vec::with_capacity(nch);
         for n in 1..=nch {
@@ -354,6 +387,9 @@ impl Backend for ProfileBackend {
         n: usize,
         ch: &ChannelConfig,
     ) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.apply_channel(s, n, ch);
+        }
         let table = self.table();
         // Probe gain changes the engineering units of scale/offset, so set it first.
         self.write_channel(s, table.probe_gain.as_ref(), n, &ch.probe_gain.to_string())?;
@@ -392,6 +428,9 @@ impl Backend for ProfileBackend {
     }
 
     fn apply_horizontal(&self, s: &mut ScpiSession, h: &HorizontalConfig) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.apply_horizontal(s, h);
+        }
         let table = self.table();
         self.write_plain(
             s,
@@ -407,6 +446,9 @@ impl Backend for ProfileBackend {
     }
 
     fn apply_trigger(&self, s: &mut ScpiSession, t: &TriggerConfig) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.apply_trigger(s, t);
+        }
         let table = self.table();
         self.write_plain(s, table.trigger_mode.as_ref(), &t.mode)?;
         self.write_plain(s, table.trigger_source.as_ref(), &t.source)?;
@@ -428,6 +470,9 @@ impl Backend for ProfileBackend {
         stop_after: &str,
         running: bool,
     ) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.apply_acquisition(s, mode, stop_after, running);
+        }
         let table = self.table();
         self.write_plain(s, table.acquisition_mode.as_ref(), mode)?;
         self.write_plain(s, table.stop_after.as_ref(), stop_after)?;
@@ -439,6 +484,9 @@ impl Backend for ProfileBackend {
     }
 
     fn fetch_channel(&self, s: &mut ScpiSession, ch: &str) -> Result<ChannelTrace, WaveformError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.fetch_channel(s, ch);
+        }
         match self.profile.waveform {
             Some(WaveformFormat {
                 preamble: PreambleKind::Tek,
@@ -456,7 +504,24 @@ impl Backend for ProfileBackend {
         }
     }
 
+    fn fetch_channels(
+        &self,
+        s: &mut ScpiSession,
+        channels: &[String],
+    ) -> Result<Vec<ChannelTrace>, WaveformError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.fetch_channels(s, channels);
+        }
+        channels
+            .iter()
+            .map(|ch| self.fetch_channel(s, ch))
+            .collect()
+    }
+
     fn wait_sequence(&self, s: &mut ScpiSession, timeout: Duration) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.wait_sequence(s, timeout);
+        }
         let table = self.table();
         if self.kind() != InstrumentKind::Oscilloscope {
             return Ok(());
@@ -483,6 +548,9 @@ impl Backend for ProfileBackend {
     }
 
     fn acquisition_status(&self, s: &mut ScpiSession) -> Result<AcquisitionStatus, ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.acquisition_status(s);
+        }
         let table = self.table();
         match self.kind() {
             InstrumentKind::Oscilloscope => {
@@ -510,6 +578,9 @@ impl Backend for ProfileBackend {
     }
 
     fn autoset(&self, s: &mut ScpiSession) -> Result<(), ScpiError> {
+        if let Some(driver) = self.driver.as_deref() {
+            return driver.autoset(s);
+        }
         let table = self.table();
         if table.autoset.is_none() {
             return Err(ScpiError::Unsupported(format!(
@@ -538,16 +609,24 @@ fn user_profile_dir() -> PathBuf {
 }
 
 fn builtin_profiles() -> Vec<InstrumentProfile> {
-    [include_str!("../profiles/example.yaml")]
-        .into_iter()
-        .filter_map(|text| {
-            serde_yaml_ng::from_str(text)
-                .map_err(|e| {
-                    eprintln!("[profiles] built-in profile parse failed: {e}");
-                })
-                .ok()
-        })
-        .collect()
+    [
+        include_str!("../profiles/example.yaml"),
+        include_str!("../profiles/tek-mdo3000.yaml"),
+        include_str!("../profiles/rigol-dho900.yaml"),
+        include_str!("../profiles/siglent-sdg1000x.yaml"),
+        include_str!("../profiles/keysight-e36200.yaml"),
+        include_str!("../profiles/tek-afg3000.yaml"),
+        include_str!("../profiles/siglent-sds1000x-e.yaml"),
+    ]
+    .into_iter()
+    .filter_map(|text| {
+        serde_yaml_ng::from_str(text)
+            .map_err(|e| {
+                eprintln!("[profiles] built-in profile parse failed: {e}");
+            })
+            .ok()
+    })
+    .collect()
 }
 
 fn load_user_profiles() -> Vec<InstrumentProfile> {
@@ -593,9 +672,22 @@ pub fn matching(idn: &str) -> Option<InstrumentProfile> {
     })
 }
 
+/// The hand-written driver a profile can delegate quirks to.
+fn driver_for(name: &str, idn: &str) -> Option<Box<dyn Backend>> {
+    match name {
+        "tek" => Some(Box::new(crate::tek::Tek)),
+        "rigol" => Some(Box::new(crate::rigol::Rigol::from_idn(idn))),
+        "sds" => Some(Box::new(crate::sds::Sds::from_idn(idn))),
+        "siglent" => Some(Box::new(crate::siglent::Siglent::from_idn(idn))),
+        "afg" => Some(Box::new(crate::afg::Afg::from_idn(idn))),
+        "keysight" => Some(Box::new(crate::keysight::KeysightPsu::from_idn(idn))),
+        _ => None,
+    }
+}
+
 /// A `Backend` driven by a data profile, when one matches.
 pub fn backend_for(idn: &str) -> Option<Box<dyn Backend>> {
-    matching(idn).map(|profile| Box::new(ProfileBackend::new(profile)) as Box<dyn Backend>)
+    matching(idn).map(|profile| Box::new(ProfileBackend::new(profile, idn)) as Box<dyn Backend>)
 }
 
 #[cfg(test)]
@@ -622,16 +714,38 @@ mod tests {
             .iter()
             .any(|m| "EXAMPLE,OSC1".contains(m.as_str())));
         assert!(matching("Vendor,Example,OSC1,SN,1.0").is_some());
-        assert!(matching("TEKTRONIX,MDO3024,SN,1.0").is_none());
+        assert!(matching("TEKTRONIX,MDO3024,SN,1.0").is_some());
     }
 
     #[test]
     fn profile_backend_reports_its_capabilities() {
         let profile = builtin_profiles().into_iter().next().unwrap();
-        let backend = ProfileBackend::new(profile);
+        let backend = ProfileBackend::new(profile, "EXAMPLE,OSC1");
         assert_eq!(backend.name(), "Example Tek-like scope");
         assert_eq!(backend.capabilities().channel_count, 2);
         assert_eq!(backend.kind(), InstrumentKind::Oscilloscope);
         assert_eq!(backend.waveform_format(), Some(WaveformFormat::TEK));
+    }
+
+    #[test]
+    fn all_supported_devices_have_profiles() {
+        let cases = [
+            ("TEKTRONIX,MDO3024,SN,1.0", "Tektronix"),
+            ("RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05", "Rigol DHO924S"),
+            ("Siglent Technologies,SDG1032X,SN,1.0", "Siglent SDG1032X"),
+            (
+                "Keysight Technologies,E36233A,SN,1.1.1-1.0.3-1.01",
+                "Keysight E36233A",
+            ),
+            ("TEKTRONIX,AFG3051C,SN,1.0", "Tektronix AFG3051C"),
+            (
+                "Siglent Technologies,SDS1104X-E,SN,7.6.1.15",
+                "Siglent SDS1104X-E",
+            ),
+        ];
+        for (idn, want) in cases {
+            let backend = crate::backend::from_idn(idn);
+            assert_eq!(backend.name(), want, "backend for {idn}");
+        }
     }
 }
