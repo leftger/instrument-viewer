@@ -337,9 +337,12 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                         .map(|i| format!("CH{i}"))
                         .collect()
                 } else {
-                    let enabled: Vec<String> = (0..4)
-                        .filter(|&i| config.channels[i].enabled)
-                        .map(|i| format!("CH{}", i + 1))
+                    let enabled: Vec<String> = config
+                        .channels
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ch)| ch.enabled)
+                        .map(|(i, _)| format!("CH{}", i + 1))
                         .collect();
                     if enabled.is_empty() {
                         vec!["CH1".into()]
@@ -392,7 +395,10 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         Command::Channel(args) => {
             let mut c = read_config(&mut session, backend)?;
             include_current_values(&mut capabilities, &c);
-            let ch = &mut c.channels[args.channel - 1];
+            let ch = c
+                .channels
+                .get_mut(args.channel - 1)
+                .ok_or_else(|| format!("{} has no channel {}", backend.name(), args.channel))?;
             if let Some(v) = args.enabled {
                 ch.enabled = v;
             }

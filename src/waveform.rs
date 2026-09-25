@@ -1,3 +1,4 @@
+use crate::profile::{SampleEncoding, WaveformFormat};
 use crate::scpi::{ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
@@ -43,26 +44,13 @@ pub fn fetch_channel(session: &mut ScpiSession, ch: &str) -> Result<ChannelTrace
     let pre = parse_preamble(&session.query("WFMOutpre?")?)?;
 
     let raw = session.query_binary_block("CURVE?")?;
-    if raw.len() % 2 != 0 {
-        return Err(WaveformError::Parse(format!(
-            "odd CURVE byte count {}",
-            raw.len()
-        )));
-    }
 
-    let points = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let level = i16::from_be_bytes([c[0], c[1]]) as f64;
-            [
-                pre.xzero + pre.xincr * i as f64,
-                pre.yzero + pre.ymult * (level - pre.yoff),
-            ]
-        })
-        .collect();
+    let points = decode_samples(
+        &WaveformFormat::TEK,
+        &raw,
+        |i| pre.xzero + pre.xincr * i as f64,
+        |code| pre.yzero + pre.ymult * (code - pre.yoff),
+    )?;
 
     Ok(ChannelTrace {
         channel: ch.to_string(),
@@ -70,6 +58,63 @@ pub fn fetch_channel(session: &mut ScpiSession, ch: &str) -> Result<ChannelTrace
         y_unit: pre.y_unit,
         points,
     })
+}
+
+/// Decode raw sample bytes into scaled (x, y) points using a
+/// [`WaveformFormat`] and the instrument-specific axis mapping. Sample decoding
+/// is shared across backends; only the preamble parsing stays vendor-specific.
+pub fn decode_samples(
+    format: &WaveformFormat,
+    raw: &[u8],
+    x: impl Fn(usize) -> f64,
+    y: impl Fn(f64) -> f64,
+) -> Result<Vec<[f64; 2]>, WaveformError> {
+    match format.encoding {
+        SampleEncoding::I16Be => {
+            if !raw.len().is_multiple_of(2) {
+                return Err(WaveformError::Parse(format!(
+                    "odd CURVE byte count {}",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let code = i16::from_be_bytes([c[0], c[1]]) as f64;
+                    [x(i), y(code)]
+                })
+                .collect())
+        }
+        SampleEncoding::U16Le => {
+            if !raw.len().is_multiple_of(2) {
+                return Err(WaveformError::Parse(format!(
+                    "odd CURVE byte count {}",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let code = u16::from_le_bytes([c[0], c[1]]) as f64;
+                    [x(i), y(code)]
+                })
+                .collect())
+        }
+        SampleEncoding::I8TwosComplement => Ok(raw
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| {
+                let code = byte as i8 as f64;
+                [x(i), y(code)]
+            })
+            .collect()),
+    }
 }
 
 /// `WFMOutpre?` is semicolon separated, but the field count is not stable:

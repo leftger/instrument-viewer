@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::config::{ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig};
+use crate::profile::{CommandTable, WaveformFormat};
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -78,30 +79,125 @@ pub trait Backend: Send {
         Vec::new()
     }
 
-    fn channel_enabled(&self, s: &mut ScpiSession, n: usize) -> Result<bool, ScpiError>;
-    fn set_channel_enabled(&self, s: &mut ScpiSession, n: usize, on: bool)
-        -> Result<(), ScpiError>;
+    /// Declarative command table. Backends that only differ in command
+    /// spelling can implement just this and inherit the default methods below;
+    /// instruments with odd reply formats keep their own overrides.
+    fn command_table(&self) -> CommandTable {
+        CommandTable::empty()
+    }
 
-    fn termination_ohms(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError>;
+    /// Waveform transfer format for scopes; `None` for generators and supplies
+    /// whose "fetch" is a preview or a measurement rather than a transfer.
+    fn waveform_format(&self) -> Option<WaveformFormat> {
+        None
+    }
+
+    fn channel_enabled(&self, s: &mut ScpiSession, n: usize) -> Result<bool, ScpiError> {
+        let table = self.command_table();
+        let reply = crate::profile::query_channel_setting(
+            s,
+            self.name(),
+            table.channel_enabled.as_ref(),
+            n,
+        )?;
+        crate::scpi::parse_bool(&reply)
+    }
+
+    fn set_channel_enabled(
+        &self,
+        s: &mut ScpiSession,
+        n: usize,
+        on: bool,
+    ) -> Result<(), ScpiError> {
+        let table = self.command_table();
+        let value = if on { "ON" } else { "OFF" };
+        crate::profile::write_channel_setting(
+            s,
+            self.name(),
+            table.channel_enabled.as_ref(),
+            n,
+            value,
+        )
+    }
+
+    fn termination_ohms(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError> {
+        let table = self.command_table();
+        let reply = crate::profile::query_channel_setting(
+            s,
+            self.name(),
+            table.termination_ohms.as_ref(),
+            n,
+        )?;
+        crate::scpi::parse_f64(&reply)
+    }
+
     fn set_termination_ohms(
         &self,
         s: &mut ScpiSession,
         n: usize,
         ohms: f64,
-    ) -> Result<(), ScpiError>;
+    ) -> Result<(), ScpiError> {
+        let table = self.command_table();
+        crate::profile::write_channel_setting(
+            s,
+            self.name(),
+            table.termination_ohms.as_ref(),
+            n,
+            &ohms.to_string(),
+        )
+    }
 
-    fn bandwidth_hz(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError>;
-    fn set_bandwidth_hz(&self, s: &mut ScpiSession, n: usize, hz: f64) -> Result<(), ScpiError>;
+    fn bandwidth_hz(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError> {
+        let table = self.command_table();
+        let reply =
+            crate::profile::query_channel_setting(s, self.name(), table.bandwidth_hz.as_ref(), n)?;
+        crate::scpi::parse_f64(&reply)
+    }
 
-    fn probe_type(&self, s: &mut ScpiSession, n: usize) -> Result<String, ScpiError>;
+    fn set_bandwidth_hz(&self, s: &mut ScpiSession, n: usize, hz: f64) -> Result<(), ScpiError> {
+        let table = self.command_table();
+        crate::profile::write_channel_setting(
+            s,
+            self.name(),
+            table.bandwidth_hz.as_ref(),
+            n,
+            &hz.to_string(),
+        )
+    }
 
-    fn trigger_level(&self, s: &mut ScpiSession, source: &str) -> Result<f64, ScpiError>;
+    fn probe_type(&self, s: &mut ScpiSession, n: usize) -> Result<String, ScpiError> {
+        let table = self.command_table();
+        let reply =
+            crate::profile::query_channel_setting(s, self.name(), table.probe_type.as_ref(), n)?;
+        Ok(crate::scpi::parse_character(&reply))
+    }
+
+    fn trigger_level(&self, s: &mut ScpiSession, source: &str) -> Result<f64, ScpiError> {
+        let table = self.command_table();
+        let reply = crate::profile::query_source_setting(
+            s,
+            self.name(),
+            table.trigger_level.as_ref(),
+            source,
+        )?;
+        crate::scpi::parse_f64(&reply)
+    }
+
     fn set_trigger_level(
         &self,
         s: &mut ScpiSession,
         source: &str,
         volts: f64,
-    ) -> Result<(), ScpiError>;
+    ) -> Result<(), ScpiError> {
+        let table = self.command_table();
+        crate::profile::write_source_setting(
+            s,
+            self.name(),
+            table.trigger_level.as_ref(),
+            source,
+            &volts.to_string(),
+        )
+    }
 
     fn apply_acquisition(
         &self,

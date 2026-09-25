@@ -1,10 +1,10 @@
 use std::convert::TryFrom;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use scpi::parser::tokenizer::{Token, Tokenizer};
 use thiserror::Error;
+
+use crate::transport::Transport;
 
 #[derive(Debug, Error)]
 pub enum ScpiError {
@@ -241,7 +241,7 @@ pub fn parse_record_length(input: &str) -> Result<u64, String> {
 }
 
 /// Log the SCPI exchange to stderr when `MDO_TRACE` is set.
-fn trace(msg: impl FnOnce() -> String) {
+pub(crate) fn trace(msg: impl FnOnce() -> String) {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     if *ON.get_or_init(|| std::env::var_os("MDO_TRACE").is_some()) {
@@ -249,15 +249,7 @@ fn trace(msg: impl FnOnce() -> String) {
     }
 }
 
-enum Transport {
-    Tcp {
-        writer: TcpStream,
-        reader: BufReader<TcpStream>,
-    },
-    Usb(crate::usbtmc::UsbtmcDevice),
-}
-
-/// SCPI session over TCP or USBTMC.
+/// SCPI session over a byte-level [`Transport`] (TCP or USBTMC).
 ///
 /// TCP talks to the instrument socket server (Tektronix: protocol None, port
 /// 4000; Rigol DHO900: 5555; Keysight/Siglent: 5025). USB uses USBTMC bulk
@@ -268,39 +260,16 @@ enum Transport {
 /// leaves it to be delivered to the *next* connection, shifting every later
 /// reply one query behind.
 pub struct ScpiSession {
-    transport: Transport,
+    transport: Box<dyn Transport>,
     line_buf: Vec<u8>,
     preamble: Vec<String>,
 }
 
 impl ScpiSession {
     pub fn connect(addr: &str, timeout: Duration) -> Result<Self, ScpiError> {
-        if crate::usbtmc::is_usb_addr(addr) {
-            let mut session = Self {
-                transport: Transport::Usb(crate::usbtmc::UsbtmcDevice::open(addr, timeout)?),
-                line_buf: Vec::with_capacity(64),
-                preamble: Vec::new(),
-            };
-            session.resync()?;
-            return Ok(session);
-        }
-
-        let sock: SocketAddr = addr
-            .to_socket_addrs()
-            .map_err(|_| ScpiError::Addr(addr.to_string()))?
-            .next()
-            .ok_or_else(|| ScpiError::Addr(addr.to_string()))?;
-
-        let stream = TcpStream::connect_timeout(&sock, timeout)?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        stream.set_nodelay(true)?;
-
+        let transport = crate::transport::connect(addr, timeout)?;
         let mut session = Self {
-            transport: Transport::Tcp {
-                writer: stream.try_clone()?,
-                reader: BufReader::new(stream),
-            },
+            transport,
             line_buf: Vec::with_capacity(64),
             preamble: Vec::new(),
         };
@@ -333,31 +302,7 @@ impl ScpiSession {
     }
 
     fn drain(&mut self) {
-        match &mut self.transport {
-            Transport::Usb(usb) => usb.drain(),
-            Transport::Tcp { writer, reader } => {
-                let _ = writer.set_nonblocking(true);
-                let mut scratch = [0u8; 4096];
-                let mut dropped = 0usize;
-                loop {
-                    match reader.get_mut().read(&mut scratch) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            dropped += n;
-                            continue;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                let buffered = reader.buffer().len();
-                reader.consume(buffered);
-                dropped += buffered;
-                if dropped > 0 {
-                    trace(|| format!("!! drained {dropped} stale bytes"));
-                }
-                let _ = writer.set_nonblocking(false);
-            }
-        }
+        self.transport.drain();
     }
 
     /// Reject syntactically invalid program messages before they hit the socket.
@@ -381,14 +326,7 @@ impl ScpiSession {
         self.line_buf.clear();
         self.line_buf.extend_from_slice(cmd.as_bytes());
         self.line_buf.push(b'\n');
-        match &mut self.transport {
-            Transport::Usb(usb) => usb.write_message(&self.line_buf),
-            Transport::Tcp { writer, .. } => {
-                writer.write_all(&self.line_buf)?;
-                writer.flush()?;
-                Ok(())
-            }
-        }
+        self.transport.write_message(&self.line_buf)
     }
 
     pub fn query(&mut self, cmd: &str) -> Result<String, ScpiError> {
@@ -397,23 +335,7 @@ impl ScpiSession {
         // A leftover LF from a previous block or drain can yield an empty
         // line; skip those so the next query does not eat this command's reply.
         loop {
-            let line = match &mut self.transport {
-                Transport::Usb(usb) => usb.read_line()?,
-                Transport::Tcp { reader, .. } => {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(0) => return Err(ScpiError::Empty),
-                        Ok(_) => line.trim().to_string(),
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::WouldBlock
-                                || e.kind() == std::io::ErrorKind::TimedOut =>
-                        {
-                            return Err(ScpiError::Timeout);
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-            };
+            let line = self.transport.read_line()?;
             if line.is_empty() {
                 continue;
             }
@@ -466,19 +388,7 @@ impl ScpiSession {
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ScpiError> {
-        match &mut self.transport {
-            Transport::Usb(usb) => usb.read_exact(buf),
-            Transport::Tcp { reader, .. } => match reader.read_exact(buf) {
-                Ok(()) => Ok(()),
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut =>
-                {
-                    Err(ScpiError::Timeout)
-                }
-                Err(e) => Err(e.into()),
-            },
-        }
+        self.transport.read_exact(buf)
     }
 }
 
