@@ -1,18 +1,137 @@
 # instrument-viewer
 
+<p align="center">
+  <img src="assets/aztec_rustacean.png" alt="instrument-viewer" width="100%">
+</p>
+
+[![CI](https://github.com/leftger/instrument-viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leftger/instrument-viewer/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 Rust GUI that pulls analog traces from Tektronix **MDO3000** and Rigol
 **DHO900** oscilloscopes over SCPI TCP and plots them. It also controls a
 Siglent **SDG1032X** generator and Keysight **E36200** supplies, including the
 single-output **E36231A** and the dual-output **E36233A** (socket port 5025).
+USB **USBTMC** instruments are supported too (no NI-VISA).
 
-Verified against a Tektronix MDO3024 (firmware v1.30) and a Rigol DHO924S
-(firmware 00.01.05). The backend is selected automatically from `*IDN?`.
+---
 
-## Scope setup
+## Supported instruments
+
+| Instrument | Role | SCPI port | Verified against |
+| :--- | :--- | :---: | :--- |
+| Tektronix MDO3000 | Oscilloscope | 4000 | MDO3024, firmware v1.30 |
+| Rigol DHO900 | Oscilloscope | 5555 | DHO924S, firmware 00.01.05 |
+| Siglent SDG1032X | Waveform generator | 5025 | — |
+| Keysight E36231A | Single-output DC supply | 5025 | — |
+| Keysight E36233A | Dual-output DC supply | 5025 | E36233A, firmware 1.1.1-1.0.3-1.01 |
+| Keysight E3631A / E36234A | Command-compatible supplies | 5025 | — |
+| Tektronix AFG3000 | Waveform generator | 4000 | — |
+| Siglent SDS1000X-E | Oscilloscope | 5025 | — |
+
+The backend is selected automatically from the `*IDN?` reply, so unsupported
+settings are hidden or read-only in the left panel.
+
+---
+
+## Quick start
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="instrument-viewer demo waveform" width="100%">
+</p>
+
+```bash
+cargo run --release
+```
+
+**Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm one acquisition,
+wait for it to complete, then pull the curve). **CSV** / **JSON** / **PNG**
+save the traces already on the plot (JSON includes measurements and a settings
+snapshot; **Wide** writes `t,CH1,CH2,…`). **Cursors**: left-click sets A, right-click
+or Shift-click sets B; the bar under the plot shows Δt and 1/Δt.
+
+No instrument at hand? **Demo** plots a synthetic sine. The README screenshot
+above is reproducible from the app itself:
+
+```bash
+cargo run --release -- --screenshot assets/screenshot.png
+```
+
+That launches the GUI with the demo waveform, saves a window screenshot to the
+given path, and exits.
+
+---
+
+## Using the GUI
+
+The **View** row controls the plot:
+
+- **Autoscale** refits both axes on every capture. Any manual zoom, scroll, or drag
+  switches it off so the view stops jumping; **Fit now** is a one-shot refit.
+- **Stack** gives each channel its own band, scaled to that channel's own min and
+  max, so a 50 mV ripple is as tall as a 5 V square wave instead of a flat line
+  next to it. The y axis then labels bands by channel rather than volts; hover a
+  trace to read the real value, and the cursor and measurement readouts under the
+  plot stay in volts either way.
+- **Zoom axes X / Y** choose which axes zoom. Untick **X** to zoom vertically only —
+  a Mac trackpad pinch is uniform, so this is how you get vertical-only zoom.
+- **−** / **+** zoom the enabled axes; **−Y** / **+Y** always zoom vertically.
+- **Scroll zooms** (default on) makes two-finger scroll zoom the enabled axes.
+  Turn it off to pan with scroll instead.
+- Drag pans, right-drag is a box zoom, and double-click resets.
+
+The left panel reads the current front-panel state and controls. Its choices are
+provided by the detected instrument backend, so unsupported settings are hidden
+or read-only:
+
+- CH1–CH4 enable, volts/div, position, offset, coupling, 1 MΩ/50 Ω input,
+  passive-probe attenuation, and bandwidth
+- time/div, horizontal position, and record length
+- edge-trigger mode, source, slope, coupling, and level
+- acquisition mode, continuous/single-sequence behavior, and run/stop
+- Autoset and an advanced raw SCPI query/write console
+
+For example, DHO900 input termination is shown as fixed 1 MΩ and its bandwidth
+choices are 20 MHz or the model's full bandwidth. Its memory-depth selector
+includes 1k–50M with a reminder that the maximum is 50M for one active channel,
+25M for two, and 10M for all four.
+
+Each Apply operation is read back from the instrument so values coerced by the
+scope are reflected in the GUI. Physical front-panel changes can be imported with
+**Refresh**. **Demo** plots a synthetic sine with no instrument attached.
+
+> **50 Ω caution:** only select 50 Ω input termination when the source voltage is
+> safe for the scope's internal terminator. Unlike a passive probe setting, this
+> physically changes the input load.
+
+### Rendering notes
+
+Traces are min/max reduced to about two points per pixel column before plotting,
+and the reduction relaxes as you zoom in. `egui_plot` transforms and tessellates
+every point it is given on every frame with no culling, so handing it two raw
+10k-point records made a maximized window redraw too slowly to respond. Peaks
+survive the reduction, and measurements and exports always use full resolution.
+The bar under the plot shows plotted-versus-captured point counts.
+
+Host, port, Auto interval, Wide CSV, and Scroll-zooms are remembered in
+`~/.config/instrument-viewer/prefs`. `--host` / `--port` on the command line override the
+saved address.
+
+Auto captures every 2 seconds by default; the spinner next to it sets the interval
+(0.5–30 s). The slow default is deliberate — see the quirks section. Auto switches
+itself off on any error rather than retrying into a struggling instrument.
+
+While connected and otherwise idle, the toolbar polls acquisition state every
+two seconds. Tektronix reports `Acq: RUN`/`STOP`; Rigol also exposes trigger
+states such as `TD` and `WAIT`. Polls pause during fetches and settings changes,
+never reconnect, and silently back off if the instrument does not answer.
+
+---
+
+## Instrument setup
 
 ### Tektronix MDO3000
 
-1. Ethernet to the Mac. A direct cable is fine — both ends self-assign link-local
+1. Ethernet to the computer. A direct cable is fine — both ends self-assign link-local
    `169.254.x.x` addresses. There is **no DHCP server** on that cable.
 2. On the scope, **Ethernet & LXI → LAN Settings**:
    - **DHCP: Off** (otherwise LXI shows *LAN fault / Unable to renew DHCP lease*
@@ -34,7 +153,7 @@ nc -z -v 169.254.6.252 4000
 
 ### Rigol DHO900
 
-Connect the scope to the same network as the Mac (or use a direct Ethernet
+Connect the scope to the same network as the computer (or use a direct Ethernet
 connection), note its IP under the LAN settings, and use raw SCPI port **5555**.
 The scope does not listen on the Tektronix default port 4000.
 
@@ -109,102 +228,21 @@ nc -z -v <psu-ip> 5025
 cargo run --release -- --host <psu-ip> --port 5025 get
 ```
 
-The GUI remembers the host and port after they are entered once. **Scan** browses
-mDNS LXI (`_lxi._tcp`, `_scpi-raw._tcp`) and probes ARP neighbors, but only
-IPv4 link-local addresses (`169.254.1.0`–`169.254.254.255`). It does not probe
-the Wi-Fi or any other routed LAN. Those hosts are queried on ports 4000, 5555
-and 5025 with `*IDN?`. It also lists **USB TMC** instruments (USB class
-`0xFE` / subclass `0x03`), probes `*IDN?` over USBTMC, and fills Host with an
-address like `usb:0699:0408:<serial>#0`. Connect opens that USBTMC interface
-(no NI-VISA). A single hit fills Host/Port; several hits appear in the
+---
+
+## Discovery and connection
+
+**Scan** browses mDNS LXI (`_lxi._tcp`, `_scpi-raw._tcp`) and probes ARP
+neighbors, but only IPv4 link-local addresses (`169.254.1.0`–`169.254.254.255`).
+It does not probe the Wi-Fi or any other routed LAN. Those hosts are queried on
+ports 4000, 5555 and 5025 with `*IDN?`. It also lists **USB TMC** instruments
+(USB class `0xFE` / subclass `0x03`), probes `*IDN?` over USBTMC, and fills Host
+with an address like `usb:0699:0408:<serial>#0`. Connect opens that USBTMC
+interface (no NI-VISA). A single hit fills Host/Port; several hits appear in the
 dropdown. From the CLI: `cargo run --release -- discover`. If a LAN port
 refuses TCP, Connect tries the other standard ports (4000/5555/5025).
 
-## Run
-
-```bash
-cargo run --release
-```
-
-**Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm one acquisition,
-wait for it to complete, then pull the curve). **CSV** / **JSON** / **PNG**
-save the traces already on the plot (JSON includes measurements and a settings
-snapshot; **Wide** writes `t,CH1,CH2,…`). **Cursors**: left-click sets A, right-click
-or Shift-click sets B; the bar under the plot shows Δt and 1/Δt.
-
-The **View** row controls the plot:
-
-- **Autoscale** refits both axes on every capture. Any manual zoom, scroll, or drag
-  switches it off so the view stops jumping; **Fit now** is a one-shot refit.
-- **Stack** gives each channel its own band, scaled to that channel's own min and
-  max, so a 50 mV ripple is as tall as a 5 V square wave instead of a flat line
-  next to it. The y axis then labels bands by channel rather than volts; hover a
-  trace to read the real value, and the cursor and measurement readouts under the
-  plot stay in volts either way.
-- **Zoom axes X / Y** choose which axes zoom. Untick **X** to zoom vertically only —
-  a Mac trackpad pinch is uniform, so this is how you get vertical-only zoom.
-- **−** / **+** zoom the enabled axes; **−Y** / **+Y** always zoom vertically.
-- **Scroll zooms** (default on) makes two-finger scroll zoom the enabled axes.
-  Turn it off to pan with scroll instead.
-- Drag pans, right-drag is a box zoom, and double-click resets.
-
-Traces are min/max reduced to about two points per pixel column before plotting,
-and the reduction relaxes as you zoom in. `egui_plot` transforms and tessellates
-every point it is given on every frame with no culling, so handing it two raw
-10k-point records made a maximized window redraw too slowly to respond. Peaks
-survive the reduction, and measurements and exports always use full resolution.
-The bar under the plot shows plotted-versus-captured point counts.
-
-Host, port, Auto interval, Wide CSV, and Scroll-zooms are remembered in
-`~/.config/instrument-viewer/prefs`. `--host` / `--port` on the command line override the
-saved address.
-
-Auto captures every 2 seconds by default; the spinner next to it sets the interval
-(0.5–30 s). The slow default is deliberate — see the quirks section. Auto switches
-itself off on any error rather than retrying into a struggling instrument.
-
-While connected and otherwise idle, the toolbar polls acquisition state every
-two seconds. Tektronix reports `Acq: RUN`/`STOP`; Rigol also exposes trigger
-states such as `TD` and `WAIT`. Polls pause during fetches and settings changes,
-never reconnect, and silently back off if the instrument does not answer.
-
-The left panel reads the current front-panel state and controls. Its choices are
-provided by the detected instrument backend, so unsupported settings are hidden
-or read-only:
-
-- CH1–CH4 enable, volts/div, position, offset, coupling, 1 MΩ/50 Ω input,
-  passive-probe attenuation, and bandwidth
-- time/div, horizontal position, and record length
-- edge-trigger mode, source, slope, coupling, and level
-- acquisition mode, continuous/single-sequence behavior, and run/stop
-- Autoset and an advanced raw SCPI query/write console
-
-For example, DHO900 input termination is shown as fixed 1 MΩ and its bandwidth
-choices are 20 MHz or the model's full bandwidth. Its memory-depth selector
-includes 1k–50M with a reminder that the maximum is 50M for one active channel,
-25M for two, and 10M for all four.
-
-Each Apply operation is read back from the instrument so values coerced by the
-scope are reflected in the GUI. Physical front-panel changes can be imported with
-**Refresh**. **Demo** plots a synthetic sine with no instrument attached.
-
-> **50 Ω caution:** only select 50 Ω input termination when the source voltage is
-> safe for the scope's internal terminator. Unlike a passive probe setting, this
-> physically changes the input load.
-
-Headless checks, useful for isolating app bugs from instrument bugs:
-
-```bash
-# Raw session: connect once, fetch N times. Safe to run.
-cargo run --release --example probe -- 169.254.6.252:4000 CH1 40
-
-# Drives the real GUI worker (connect, read config, fetch) without the window.
-cargo run --release -- selftest --cycles 20
-
-# Reconnects every cycle. This WILL wedge the instrument; see the quirks
-# section. Only run it to demonstrate that failure mode.
-cargo run --release -- selftest --cycles 25 --reconnect
-```
+---
 
 ## CLI control
 
@@ -248,6 +286,22 @@ cargo run --release -- export --sequence --out shot.json
 
 Run `cargo run --release -- <subcommand> --help` for the accepted values. Passive
 probe attenuation is converted to SCPI gain (`10x` → `PROBE:GAIN 0.1`).
+
+Headless checks, useful for isolating app bugs from instrument bugs:
+
+```bash
+# Raw session: connect once, fetch N times. Safe to run.
+cargo run --release --example probe -- 169.254.6.252:4000 CH1 40
+
+# Drives the real GUI worker (connect, read config, fetch) without the window.
+cargo run --release -- selftest --cycles 20
+
+# Reconnects every cycle. This WILL wedge the instrument; see the quirks
+# section. Only run it to demonstrate that failure mode.
+cargo run --release -- selftest --cycles 25 --reconnect
+```
+
+---
 
 ## Protocol
 
@@ -293,6 +347,8 @@ Rigol WORD samples are unsigned little-endian:
 `NORM` returns the 1,000 on-screen points while the scope is running. After a
 single acquisition stops, `RAW` returns the full acquisition memory; long
 records are transferred in windows.
+
+---
 
 ## Tektronix instrument quirks this works around
 
@@ -348,6 +404,8 @@ one ~44 ms round trip.
 10,000-point record stops the scope responding rather than clamping. Always set it
 from `HORizontal:RECOrdlength?`.
 
+---
+
 ## Rigol DHO900 notes
 
 The DHO900 firmware accepts much of the Tektronix command vocabulary, but not
@@ -362,6 +420,19 @@ The DHO900 inputs are fixed at 1 MΩ. Attempts to apply 50 Ω termination return
 clear unsupported-setting error. Its bandwidth control is an OFF/20 MHz limit,
 which the GUI presents as full instrument bandwidth or 20 MHz.
 
+---
+
 ## Not implemented
 
 USB CDC-only gadgets (not USBTMC), digital-channel setup, non-edge triggers, and RF/spectrum controls.
+
+---
+
+## License
+
+Dual-licensed under either of:
+
+- **MIT License** ([`LICENSE-MIT`](./LICENSE-MIT))
+- **Apache License, Version 2.0** ([`LICENSE-APACHE`](./LICENSE-APACHE))
+
+at your option.

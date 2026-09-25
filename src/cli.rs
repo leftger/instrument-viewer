@@ -26,6 +26,10 @@ pub struct Cli {
     /// Raw SCPI socket-server port. Tek 4000, Rigol 5555, Keysight/Siglent 5025.
     #[arg(long, default_value_t = 4000, global = true)]
     pub port: u16,
+    /// Launch the GUI with a demo waveform, save a window screenshot to this
+    /// path, and exit. Reproduces the README screenshot.
+    #[arg(long, global = true)]
+    pub screenshot: Option<std::path::PathBuf>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
