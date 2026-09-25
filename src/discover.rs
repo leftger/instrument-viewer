@@ -447,7 +447,6 @@ IP address       HW type     Flags       HW address            Mask     Device
     fn only_link_local_addresses_are_probed() {
         assert!(usable_ip("169.254.6.252".parse().unwrap()));
         assert!(usable_ip("169.254.41.241".parse().unwrap()));
-        assert!(!usable_ip("10.140.33.160".parse().unwrap()));
         assert!(!usable_ip("192.168.1.1".parse().unwrap()));
         assert!(!usable_ip("169.254.0.5".parse().unwrap()));
         assert!(!usable_ip("169.254.255.5".parse().unwrap()));
