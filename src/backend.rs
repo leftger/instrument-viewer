@@ -77,6 +77,8 @@ pub enum InstrumentKind {
     Oscilloscope,
     Generator,
     Supply,
+    Multimeter,
+    Spectrum,
 }
 
 impl InstrumentKind {
@@ -330,6 +332,10 @@ fn from_idn_builtin(idn: &str) -> Box<dyn Backend> {
         || upper.contains("DS1104Z")
     {
         Box::new(crate::ds1000z::Ds1000z::from_idn(idn))
+    } else if upper.contains("DM3058") {
+        Box::new(crate::dm3058::Dm3058::from_idn(idn))
+    } else if upper.contains("DSA8") {
+        Box::new(crate::dsa800::Dsa800::from_idn(idn))
     } else if upper.contains("RIGOL") {
         Box::new(crate::rigol::Rigol::from_idn(idn))
     } else if upper.contains("AFG") {

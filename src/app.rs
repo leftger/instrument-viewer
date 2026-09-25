@@ -164,6 +164,12 @@ impl ViewerApp {
             .is_some_and(|caps| caps.kind == InstrumentKind::Supply)
     }
 
+    fn is_multimeter(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.kind == InstrumentKind::Multimeter)
+    }
+
     fn clear_supply_session(&mut self) {
         self.supply_history.clear();
         self.supply_t0 = None;
@@ -507,6 +513,59 @@ impl ViewerApp {
                         .size(14.0)
                         .color(dim),
                 );
+            });
+        ui.add_space(8.0);
+    }
+
+    /// Bench-multimeter reading: the latest fetched value, big and green.
+    fn show_meter_phosphor(&self, ui: &mut egui::Ui) {
+        let bg = egui::Color32::from_rgb(4, 16, 8);
+        let glow = egui::Color32::from_rgb(80, 255, 70);
+        let dim = egui::Color32::from_rgb(24, 92, 36);
+        egui::Frame::new()
+            .fill(bg)
+            .inner_margin(egui::Margin::same(18))
+            .corner_radius(egui::CornerRadius::same(6))
+            .show(ui, |ui| {
+                let Some(trace) = self.traces.first() else {
+                    ui.label(
+                        egui::RichText::new("FETCH")
+                            .monospace()
+                            .size(64.0)
+                            .color(dim),
+                    );
+                    ui.label(
+                        egui::RichText::new("to take a reading")
+                            .monospace()
+                            .size(18.0)
+                            .color(dim),
+                    );
+                    return;
+                };
+                ui.label(
+                    egui::RichText::new(&trace.channel)
+                        .monospace()
+                        .size(18.0)
+                        .color(dim),
+                );
+                let value = trace.points.last().map(|point| point[1]);
+                ui.label(
+                    egui::RichText::new(meter_text(value.unwrap_or(f64::NAN), &trace.y_unit))
+                        .monospace()
+                        .size(64.0)
+                        .color(glow),
+                );
+                if let Some(config) = self.config.as_ref().and_then(|c| c.channels.first()) {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "function {} · range {}",
+                            config.wave_type, config.probe_type
+                        ))
+                        .monospace()
+                        .size(14.0)
+                        .color(dim),
+                    );
+                }
             });
         ui.add_space(8.0);
     }
@@ -952,6 +1011,10 @@ impl eframe::App for ViewerApp {
             if supply {
                 self.show_supply_phosphor(ui);
             }
+            if self.is_multimeter() {
+                self.show_meter_phosphor(ui);
+                return;
+            }
             if supply && supply_capture_count(&self.supply_history) < 2 {
                 return;
             }
@@ -1176,9 +1239,20 @@ impl ViewerApp {
                     .collect();
                 let generator = capabilities.kind == InstrumentKind::Generator;
                 let supply = capabilities.kind == InstrumentKind::Supply;
+                let multimeter = capabilities.kind == InstrumentKind::Multimeter;
+                let spectrum = capabilities.kind == InstrumentKind::Spectrum;
                 let scope = capabilities.kind.is_scope();
 
-                egui::CollapsingHeader::new(if scope { "Channels" } else { "Outputs" })
+                let channels_label = if scope {
+                    "Channels"
+                } else if multimeter {
+                    "Function"
+                } else if spectrum {
+                    "Span"
+                } else {
+                    "Outputs"
+                };
+                egui::CollapsingHeader::new(channels_label)
                     .default_open(true)
                     .show(ui, |ui| {
                         if supply && !capabilities.output_pairs.is_empty() {
@@ -1261,6 +1335,35 @@ impl ViewerApp {
                             if let Some(hint) = &capabilities.channel_hint {
                                 ui.small(hint);
                             }
+                        } else if multimeter {
+                            combo_string(ui, "Function", &mut ch.wave_type, &capabilities.wave_types);
+                            ui.horizontal(|ui| {
+                                ui.label("Reading");
+                                ui.strong(format!(
+                                    "{} {}",
+                                    meter_text(ch.scale, &ch.probe_type),
+                                    ch.probe_type
+                                ));
+                            });
+                            if let Some(hint) = &capabilities.channel_hint {
+                                ui.small(hint);
+                            }
+                        } else if spectrum {
+                            value_row(ui, "Center (Hz)", &mut config.horizontal.position, 1e6);
+                            value_row(ui, "Span (Hz)", &mut config.horizontal.scale, 1e5);
+                            if let Some(hint) = &capabilities.horizontal_hint {
+                                ui.small(hint);
+                            }
+                            if ui
+                                .add_enabled(!self.pending, egui::Button::new("Apply span"))
+                                .clicked()
+                            {
+                                let section = ConfigSection::Horizontal(config.horizontal.clone());
+                                if let Some(stored) = self.config.as_mut() {
+                                    stored.horizontal = config.horizontal.clone();
+                                }
+                                self.send_config(section);
+                            }
                         } else {
                             ui.checkbox(&mut ch.enabled, "Displayed / fetched");
                             value_row(ui, "Scale (V/div)", &mut ch.scale, 0.01);
@@ -1338,12 +1441,13 @@ impl ViewerApp {
                             }
                         }
 
-                        if ui
-                            .add_enabled(
-                                !self.pending && !(supply && index > 0 && matches!(output_pair.as_str(), "PARALLEL" | "SERIES")),
-                                egui::Button::new("Apply channel"),
-                            )
-                            .clicked()
+                        if !spectrum
+                            && ui
+                                .add_enabled(
+                                    !self.pending && !(supply && index > 0 && matches!(output_pair.as_str(), "PARALLEL" | "SERIES")),
+                                    egui::Button::new("Apply channel"),
+                                )
+                                .clicked()
                         {
                             let section = ConfigSection::Channel(index, ch.clone());
                             self.config = Some(config.clone());

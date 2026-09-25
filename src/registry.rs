@@ -334,7 +334,10 @@ impl Backend for ProfileBackend {
                 self.read_scope_trigger(s)?,
                 self.read_scope_acquisition(s)?,
             ),
-            InstrumentKind::Generator | InstrumentKind::Supply => {
+            InstrumentKind::Generator
+            | InstrumentKind::Supply
+            | InstrumentKind::Multimeter
+            | InstrumentKind::Spectrum => {
                 let freq = channels
                     .iter()
                     .find(|ch| ch.enabled && ch.frequency_hz > 0.0)
@@ -574,6 +577,10 @@ impl Backend for ProfileBackend {
                     display: states.join("  "),
                 })
             }
+            InstrumentKind::Multimeter | InstrumentKind::Spectrum => Ok(AcquisitionStatus {
+                running: true,
+                display: String::new(),
+            }),
         }
     }
 
@@ -614,6 +621,8 @@ fn builtin_profiles() -> Vec<InstrumentProfile> {
         include_str!("../profiles/tek-mdo3000.yaml"),
         include_str!("../profiles/rigol-mso1000z.yaml"),
         include_str!("../profiles/rigol-dho900.yaml"),
+        include_str!("../profiles/rigol-dm3058.yaml"),
+        include_str!("../profiles/rigol-dsa800.yaml"),
         include_str!("../profiles/siglent-sdg1000x.yaml"),
         include_str!("../profiles/keysight-e36200.yaml"),
         include_str!("../profiles/tek-afg3000.yaml"),
@@ -679,6 +688,8 @@ fn driver_for(name: &str, idn: &str) -> Option<Box<dyn Backend>> {
         "tek" => Some(Box::new(crate::tek::Tek)),
         "rigol" => Some(Box::new(crate::rigol::Rigol::from_idn(idn))),
         "ds1000z" => Some(Box::new(crate::ds1000z::Ds1000z::from_idn(idn))),
+        "dm3058" => Some(Box::new(crate::dm3058::Dm3058::from_idn(idn))),
+        "dsa800" => Some(Box::new(crate::dsa800::Dsa800::from_idn(idn))),
         "sds" => Some(Box::new(crate::sds::Sds::from_idn(idn))),
         "siglent" => Some(Box::new(crate::siglent::Siglent::from_idn(idn))),
         "afg" => Some(Box::new(crate::afg::Afg::from_idn(idn))),
@@ -737,6 +748,14 @@ mod tests {
             (
                 "RIGOL TECHNOLOGIES,MSO1104Z,DS1ZD123456789,00.04.03.SP2",
                 "Rigol MSO1104Z",
+            ),
+            (
+                "RIGOL TECHNOLOGIES,DM3058,DM3A123456789,00.01.00",
+                "Rigol DM3058",
+            ),
+            (
+                "RIGOL TECHNOLOGIES,DSA815,DSA8A123456789,00.01.17",
+                "Rigol DSA815",
             ),
             ("Siglent Technologies,SDG1032X,SN,1.0", "Siglent SDG1032X"),
             (

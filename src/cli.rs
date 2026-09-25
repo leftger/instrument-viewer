@@ -300,6 +300,18 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                     ch.bandwidth_hz
                 );
                     }
+                    crate::backend::InstrumentKind::Multimeter => {
+                        println!(
+                            "C{} function={} reading={} {}",
+                            i + 1,
+                            ch.wave_type,
+                            ch.scale,
+                            ch.probe_type
+                        );
+                    }
+                    crate::backend::InstrumentKind::Spectrum => {
+                        println!("TRACE center={} Hz span={} Hz", ch.position, ch.scale);
+                    }
                 }
             }
             println!(
