@@ -1,0 +1,7 @@
+# Hantek HRDO2000 series digital oscilloscope. Channel/timebase/trigger/acquire
+# control and the 128-byte-header waveform transfer live in the `hrdo2000`
+# driver; run/stop is `:RUNing ON|OFF` and single-shot is `:SINGle`.
+idn_matches:
+  - "HRDO2"
+name: "Hantek HRDO2000"
+driver: hrdo2000

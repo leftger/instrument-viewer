@@ -1,0 +1,6 @@
+# Hantek HDM3000 benchtop digital multimeter. Function selection
+# (`FUNC "<function>"`) and `READ?` live in the `hdm3000` driver.
+idn_matches:
+  - "HDM3000"
+name: "Hantek HDM3000"
+driver: hdm3000

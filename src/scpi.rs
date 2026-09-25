@@ -390,6 +390,72 @@ impl ScpiSession {
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ScpiError> {
         self.transport.read_exact(buf)
     }
+
+    /// Read a block whose payload length is an ASCII field *inside* a
+    /// fixed-size binary header instead of the standard `#N<digits>` position.
+    ///
+    /// The Hantek HRDO2000 answers `:WAVeform:DATA:DISP?` with `#9`, nine
+    /// reserved bytes, the nine-digit byte count, more reserved bytes, and then
+    /// one byte per sample. `header_len` is the header size (128 there),
+    /// `len_start`/`len_len` locate the count field within it.
+    ///
+    /// Returns the header followed by the payload, so the caller can read the
+    /// scaling fields out of it.
+    pub fn query_header_block(
+        &mut self,
+        cmd: &str,
+        header_len: usize,
+        len_start: usize,
+        len_len: usize,
+    ) -> Result<Vec<u8>, ScpiError> {
+        /// Refuse an implausible count rather than trying to allocate it.
+        const MAX_BLOCK_BYTES: usize = 64 * 1024 * 1024;
+
+        self.write(cmd)?;
+
+        // Skip any leading whitespace or header text before the block marker.
+        let mut b = [0u8; 1];
+        let mut guard = 0;
+        loop {
+            self.read_exact(&mut b)?;
+            if b[0] == b'#' {
+                break;
+            }
+            guard += 1;
+            if guard > 256 {
+                return Err(ScpiError::BadBlock);
+            }
+        }
+
+        // The marker is the header's first byte; the rest is binary.
+        let mut header = vec![0u8; header_len];
+        if header_len == 0 {
+            return Err(ScpiError::BadBlock);
+        }
+        header[0] = b'#';
+        self.read_exact(&mut header[1..])?;
+
+        let nbytes = parse_header_len(&header, len_start, len_len).ok_or(ScpiError::BadBlock)?;
+        if nbytes > MAX_BLOCK_BYTES {
+            return Err(ScpiError::BadBlock);
+        }
+
+        let mut payload = vec![0u8; nbytes];
+        self.read_exact(&mut payload)?;
+        // Trailing LF terminates the block.
+        let _ = self.read_exact(&mut b);
+        trace(|| format!("<- <{nbytes} byte payload in {header_len} byte header>"));
+        header.extend_from_slice(&payload);
+        Ok(header)
+    }
+}
+
+/// Read the ASCII byte count out of a binary block header.
+fn parse_header_len(header: &[u8], len_start: usize, len_len: usize) -> Option<usize> {
+    let end = len_start.checked_add(len_len)?;
+    let field = header.get(len_start..end)?;
+    let text = std::str::from_utf8(field).ok()?;
+    text.trim().trim_start_matches('+').parse().ok()
 }
 
 #[cfg(test)]
@@ -403,6 +469,27 @@ mod tests {
         assert!(refused.is_connection_refused());
         assert!(!timeout.is_connection_refused());
         assert!(!ScpiError::Timeout.is_connection_refused());
+    }
+
+    #[test]
+    fn reads_length_from_a_binary_header() {
+        // Mirrors the HRDO2000 header: '#9', 9 reserved bytes, 9 ASCII digits.
+        let mut header = vec![b'#', b'9'];
+        header.extend_from_slice(b"123456789"); // reserved
+        header.extend_from_slice(b"000001024"); // payload byte count
+        header.extend_from_slice(&[0u8; 100]); // more reserved
+        assert_eq!(parse_header_len(&header, 11, 9), Some(1024));
+        // A space-padded field still parses.
+        let mut padded = header.clone();
+        padded[11..20].copy_from_slice(b"     1024");
+        assert_eq!(parse_header_len(&padded, 11, 9), Some(1024));
+    }
+
+    #[test]
+    fn rejects_out_of_range_header_field() {
+        let header = vec![0u8; 20];
+        assert_eq!(parse_header_len(&header, 11, 9), None);
+        assert_eq!(parse_header_len(&header, 18, 9), None);
     }
 
     #[test]
