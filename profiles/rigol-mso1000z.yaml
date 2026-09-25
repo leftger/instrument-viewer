@@ -1,0 +1,12 @@
+# Rigol DS1000Z / MSO1000Z series (DS1054Z, DS1074Z, DS1104Z, and their MSO
+# logic-analyzer variants). Shares one SCPI command set; the analog-scope
+# control plane and WORD waveform transfer live in the `ds1000z` driver.
+idn_matches:
+  - "MSO1054Z"
+  - "MSO1074Z"
+  - "MSO1104Z"
+  - "DS1054Z"
+  - "DS1074Z"
+  - "DS1104Z"
+name: "Rigol DS1000Z/MSO1000Z"
+driver: ds1000z

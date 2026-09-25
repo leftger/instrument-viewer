@@ -4,6 +4,7 @@ mod backend;
 mod cli;
 mod config;
 mod discover;
+mod ds1000z;
 mod export;
 mod keysight;
 mod measure;

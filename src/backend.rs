@@ -324,6 +324,12 @@ fn from_idn_builtin(idn: &str) -> Box<dyn Backend> {
         Box::new(crate::siglent::Siglent::from_idn(idn))
     } else if crate::keysight::is_power_supply_idn(&upper) {
         Box::new(crate::keysight::KeysightPsu::from_idn(idn))
+    } else if upper.contains("MSO1")
+        || upper.contains("DS1054Z")
+        || upper.contains("DS1074Z")
+        || upper.contains("DS1104Z")
+    {
+        Box::new(crate::ds1000z::Ds1000z::from_idn(idn))
     } else if upper.contains("RIGOL") {
         Box::new(crate::rigol::Rigol::from_idn(idn))
     } else if upper.contains("AFG") {
