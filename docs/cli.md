@@ -39,7 +39,11 @@ cargo run --release -- export --sequence --out shot.json
 ```
 
 Run `cargo run --release -- <subcommand> --help` for the accepted values. Passive
-probe attenuation is converted to SCPI gain (`10x` → `PROBE:GAIN 0.1`).
+probe attenuation is converted to SCPI gain (`10x` → `PROBE:GAIN 0.1`). `get`
+prints settings in the shape of the detected instrument: scope channels and
+timebase, generator outputs, supply setpoints, a meter function and reading, or
+an analyzer's center/span and trace. `export` works for every class — a meter
+exports its readings and a spectrum analyzer its sweep.
 
 ## Headless checks
 
