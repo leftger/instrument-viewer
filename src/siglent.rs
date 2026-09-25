@@ -213,13 +213,9 @@ pub fn read_config(
     session: &mut ScpiSession,
     backend: &dyn Backend,
 ) -> Result<InstrumentConfig, ScpiError> {
-    let mut channels = [
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-    ];
-    for n in 1..=2 {
+    let nch = 2;
+    let mut channels = vec![dummy_channel(); nch];
+    for n in 1..=nch {
         channels[n - 1] = read_sdg_channel(session, backend, n)?;
     }
     let freq = channels

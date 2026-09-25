@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::backend::{AcquisitionStatus, Backend, InstrumentCapabilities, ValueChoice};
-use crate::config::query_f64;
+use crate::profile::{CommandTable, Parse, Setting, WaveformFormat};
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{self, ChannelTrace, WaveformError};
 
@@ -49,61 +49,48 @@ impl Backend for Tek {
         vec!["HEADER OFF".into(), "VERBOSE OFF".into()]
     }
 
-    fn channel_enabled(&self, s: &mut ScpiSession, n: usize) -> Result<bool, ScpiError> {
-        crate::config::query_bool(s, &format!("SELECT:CH{n}?"))
+    fn command_table(&self) -> CommandTable {
+        CommandTable {
+            channel_enabled: Some(Setting {
+                query: Some("SELECT:CH{n}?"),
+                write: Some("SELECT:CH{n} {v}"),
+                parse: Parse::Bool,
+            }),
+            termination_ohms: Some(Setting {
+                query: Some("CH{n}:TERMINATION?"),
+                write: Some("CH{n}:TERMINATION {v}"),
+                parse: Parse::F64,
+            }),
+            bandwidth_hz: Some(Setting {
+                query: Some("CH{n}:BANDWIDTH?"),
+                write: Some("CH{n}:BANDWIDTH {v}"),
+                parse: Parse::F64,
+            }),
+            probe_type: Some(Setting {
+                query: Some("CH{n}:PROBE:ID:TYPE?"),
+                write: None,
+                parse: Parse::Character,
+            }),
+            trigger_level: Some(Setting {
+                query: Some("TRIGGER:A:LEVEL:{src}?"),
+                write: Some("TRIGGER:A:LEVEL:{src} {v}"),
+                parse: Parse::F64,
+            }),
+        }
     }
 
-    fn set_channel_enabled(
-        &self,
-        s: &mut ScpiSession,
-        n: usize,
-        on: bool,
-    ) -> Result<(), ScpiError> {
-        s.write(&format!("SELECT:CH{n} {}", if on { "ON" } else { "OFF" }))
-    }
-
-    fn termination_ohms(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError> {
-        query_f64(s, &format!("CH{n}:TERMINATION?"))
-    }
-
-    fn set_termination_ohms(
-        &self,
-        s: &mut ScpiSession,
-        n: usize,
-        ohms: f64,
-    ) -> Result<(), ScpiError> {
-        s.write(&format!("CH{n}:TERMINATION {ohms}"))
-    }
-
-    fn bandwidth_hz(&self, s: &mut ScpiSession, n: usize) -> Result<f64, ScpiError> {
-        query_f64(s, &format!("CH{n}:BANDWIDTH?"))
-    }
-
-    fn set_bandwidth_hz(&self, s: &mut ScpiSession, n: usize, hz: f64) -> Result<(), ScpiError> {
-        s.write(&format!("CH{n}:BANDWIDTH {hz}"))
-    }
-
-    fn probe_type(&self, s: &mut ScpiSession, n: usize) -> Result<String, ScpiError> {
-        Ok(s.query(&format!("CH{n}:PROBE:ID:TYPE?"))?
-            .trim_matches('"')
-            .to_string())
-    }
-
-    fn trigger_level(&self, s: &mut ScpiSession, source: &str) -> Result<f64, ScpiError> {
-        query_f64(s, &format!("TRIGGER:A:LEVEL:{source}?"))
-    }
-
-    fn set_trigger_level(
-        &self,
-        s: &mut ScpiSession,
-        source: &str,
-        volts: f64,
-    ) -> Result<(), ScpiError> {
-        s.write(&format!("TRIGGER:A:LEVEL:{source} {volts}"))
+    fn waveform_format(&self) -> Option<WaveformFormat> {
+        Some(WaveformFormat::TEK)
     }
 
     fn fetch_channel(&self, s: &mut ScpiSession, ch: &str) -> Result<ChannelTrace, WaveformError> {
-        waveform::fetch_channel(s, ch)
+        match self.waveform_format() {
+            Some(WaveformFormat::TEK) => waveform::fetch_channel(s, ch),
+            _ => Err(WaveformError::Parse(format!(
+                "{} has no supported waveform format",
+                self.name()
+            ))),
+        }
     }
 
     /// Restores the previous `STOPAFTER` setting and leaves the scope stopped so

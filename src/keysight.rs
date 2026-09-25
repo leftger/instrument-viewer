@@ -557,12 +557,7 @@ pub fn read_config(
     backend: &dyn Backend,
 ) -> Result<InstrumentConfig, ScpiError> {
     let nch = backend.capabilities().channel_count;
-    let mut channels = [
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-    ];
+    let mut channels = vec![dummy_channel(); nch];
     for n in 1..=nch {
         channels[n - 1] = read_output(session, backend, n)?;
     }

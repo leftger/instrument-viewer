@@ -5,6 +5,7 @@ use crate::backend::{
     channel_number, AcquisitionStatus, Backend, InstrumentCapabilities, InstrumentKind, ValueChoice,
 };
 use crate::config::{query_bool, ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig};
+use crate::profile::WaveformFormat;
 use crate::scpi::{parse_f64, ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -61,6 +62,10 @@ const CODE_PER_DIV: f64 = 25.0;
 impl Backend for Sds {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn waveform_format(&self) -> Option<WaveformFormat> {
+        Some(WaveformFormat::SDS)
     }
 
     fn kind(&self) -> InstrumentKind {
@@ -224,15 +229,12 @@ impl Backend for Sds {
         } else {
             0.0
         };
-        let points = raw
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| {
-                let code = byte as i8 as f64;
-                let voltage = code * (vdiv / CODE_PER_DIV) - offset;
-                [t0 + i as f64 * dt, voltage]
-            })
-            .collect();
+        let points = crate::waveform::decode_samples(
+            &WaveformFormat::SDS,
+            &raw,
+            |i| t0 + i as f64 * dt,
+            |code| code * (vdiv / CODE_PER_DIV) - offset,
+        )?;
 
         Ok(ChannelTrace {
             channel: ch.to_string(),
@@ -328,12 +330,7 @@ pub fn read_config(
     backend: &dyn Backend,
 ) -> Result<InstrumentConfig, ScpiError> {
     let nch = backend.capabilities().channel_count;
-    let mut channels = [
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-        dummy_channel(),
-    ];
+    let mut channels = vec![dummy_channel(); nch];
     for n in 1..=nch {
         channels[n - 1] = read_channel(session, backend, n)?;
     }

@@ -45,7 +45,9 @@ pub struct AcquisitionConfig {
 
 #[derive(Clone, Debug)]
 pub struct InstrumentConfig {
-    pub channels: [ChannelConfig; 4],
+    /// One entry per instrument channel/output, sized from
+    /// `InstrumentCapabilities::channel_count` instead of a fixed four.
+    pub channels: Vec<ChannelConfig>,
     pub horizontal: HorizontalConfig,
     pub trigger: TriggerConfig,
     pub acquisition: AcquisitionConfig,
@@ -259,12 +261,11 @@ pub(crate) fn read_scope_config<B: Backend + ?Sized>(
     session: &mut ScpiSession,
     backend: &B,
 ) -> Result<InstrumentConfig, ScpiError> {
-    let channels = [
-        read_channel(session, backend, 1)?,
-        read_channel(session, backend, 2)?,
-        read_channel(session, backend, 3)?,
-        read_channel(session, backend, 4)?,
-    ];
+    let nch = backend.capabilities().channel_count;
+    let mut channels = Vec::with_capacity(nch);
+    for number in 1..=nch {
+        channels.push(read_channel(session, backend, number)?);
+    }
 
     let horizontal = HorizontalConfig {
         scale: query_f64(session, "HORIZONTAL:SCALE?")?,
@@ -510,7 +511,7 @@ mod tests {
             frequency_hz: 0.0,
         };
         let config = InstrumentConfig {
-            channels: [channel.clone(), channel.clone(), channel.clone(), channel],
+            channels: vec![channel.clone(), channel.clone(), channel.clone(), channel],
             horizontal: HorizontalConfig {
                 scale: 1e-3,
                 position: 50.0,

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{
     channel_number, AcquisitionStatus, Backend, InstrumentCapabilities, ValueChoice,
 };
+use crate::profile::WaveformFormat;
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -67,6 +68,10 @@ impl Rigol {
 impl Backend for Rigol {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn waveform_format(&self) -> Option<WaveformFormat> {
+        Some(WaveformFormat::RIGOL)
     }
 
     fn capabilities(&self) -> InstrumentCapabilities {
@@ -236,18 +241,12 @@ impl Backend for Rigol {
         let pre = Preamble::query(s)?;
         let raw = read_points(s, raw_points.unwrap_or(pre.points), raw_mode)?;
 
-        let points = raw
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                // WORD samples are unsigned and little-endian; there is no
-                // :WAV:BYTeorder on this firmware to change that.
-                let level = u16::from_le_bytes([c[0], c[1]]) as f64;
-                [pre.time(i), pre.volts(level)]
-            })
-            .collect();
+        let points = crate::waveform::decode_samples(
+            &WaveformFormat::RIGOL,
+            &raw,
+            |i| pre.time(i),
+            |code| pre.volts(code),
+        )?;
 
         Ok(ChannelTrace {
             channel: format!("CH{n}"),

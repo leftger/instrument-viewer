@@ -1,8 +1,14 @@
 //! Temporary bisect harness: config read + fetch on one session, no worker.
 
 #[allow(dead_code)]
+#[path = "../src/profile.rs"]
+mod profile;
+#[allow(dead_code)]
 #[path = "../src/scpi.rs"]
 mod scpi;
+#[allow(dead_code)]
+#[path = "../src/transport.rs"]
+mod transport;
 #[allow(dead_code)]
 #[path = "../src/usbtmc.rs"]
 mod usbtmc;
