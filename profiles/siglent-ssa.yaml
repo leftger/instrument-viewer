@@ -1,0 +1,13 @@
+# Siglent SSA3000X / SSA3000X Plus / SSA3000X-R / SSA5000A / SVA1000X /
+# SHA800A spectrum analyzers.
+#
+# BEST-EFFORT: the manual in docs/ is an IVI-C driver guide and contains no
+# SCPI, so the `siglent_ssa` driver builds on the publicly documented SSA3000X
+# command set. Verify against hardware before trusting it.
+idn_matches:
+  - "SSA3"
+  - "SSA5"
+  - "SVA1"
+  - "SHA8"
+name: "Siglent SSA/SVA/SHA"
+driver: siglent_ssa

@@ -517,7 +517,9 @@ impl ViewerApp {
         ui.add_space(8.0);
     }
 
-    /// Bench-multimeter reading: the latest fetched value, big and green.
+    /// Bench-multimeter readings: the latest fetched values, big and green. A
+    /// scanning DAQ answers with one reading per channel, so every trace is
+    /// shown rather than only the first.
     fn show_meter_phosphor(&self, ui: &mut egui::Ui) {
         let bg = egui::Color32::from_rgb(4, 16, 8);
         let glow = egui::Color32::from_rgb(80, 255, 70);
@@ -527,7 +529,7 @@ impl ViewerApp {
             .inner_margin(egui::Margin::same(18))
             .corner_radius(egui::CornerRadius::same(6))
             .show(ui, |ui| {
-                let Some(trace) = self.traces.first() else {
+                if self.traces.is_empty() {
                     ui.label(
                         egui::RichText::new("FETCH")
                             .monospace()
@@ -541,21 +543,32 @@ impl ViewerApp {
                             .color(dim),
                     );
                     return;
-                };
-                ui.label(
-                    egui::RichText::new(&trace.channel)
-                        .monospace()
-                        .size(18.0)
-                        .color(dim),
-                );
-                let value = trace.points.last().map(|point| point[1]);
-                ui.label(
-                    egui::RichText::new(meter_text(value.unwrap_or(f64::NAN), &trace.y_unit))
-                        .monospace()
-                        .size(64.0)
-                        .color(glow),
-                );
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for trace in &self.traces {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(&trace.channel)
+                                    .monospace()
+                                    .size(18.0)
+                                    .color(dim),
+                            );
+                            let value = trace.points.last().map(|point| point[1]);
+                            ui.label(
+                                egui::RichText::new(meter_text(
+                                    value.unwrap_or(f64::NAN),
+                                    &trace.y_unit,
+                                ))
+                                .monospace()
+                                .size(52.0)
+                                .color(glow),
+                            );
+                        });
+                        ui.add_space(28.0);
+                    }
+                });
                 if let Some(config) = self.config.as_ref().and_then(|c| c.channels.first()) {
+                    ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new(format!(
                             "function {} · range {}",

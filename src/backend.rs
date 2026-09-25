@@ -322,6 +322,18 @@ fn from_idn_builtin(idn: &str) -> Box<dyn Backend> {
     // IDN also contains "SIGLENT", so the scope-vs-generator split must come first.
     if upper.contains("SDS") {
         Box::new(crate::sds::Sds::from_idn(idn))
+    } else if upper.contains("SSA3")
+        || upper.contains("SSA5")
+        || upper.contains("SVA1")
+        || upper.contains("SHA8")
+    {
+        Box::new(crate::siglent_ssa::SiglentSsa::from_idn(idn))
+    } else if upper.contains("HDM3000") {
+        Box::new(crate::hdm3000::Hdm3000::from_idn(idn))
+    } else if upper.contains("DAQ4000A") {
+        Box::new(crate::daq4000a::Daq4000a::from_idn(idn))
+    } else if upper.contains("HRDO2") {
+        Box::new(crate::hrdo2000::Hrdo2000::from_idn(idn))
     } else if upper.contains("SIGLENT") || upper.contains(",SDG") {
         Box::new(crate::siglent::Siglent::from_idn(idn))
     } else if crate::keysight::is_power_supply_idn(&upper) {

@@ -25,6 +25,9 @@ mod backend;
 #[path = "../src/config.rs"]
 mod config;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/daq4000a.rs"]
+mod daq4000a;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/dm3058.rs"]
 mod dm3058;
 #[allow(dead_code, unused_imports)]
@@ -33,6 +36,12 @@ mod ds1000z;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/dsa800.rs"]
 mod dsa800;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/hdm3000.rs"]
+mod hdm3000;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/hrdo2000.rs"]
+mod hrdo2000;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/keysight.rs"]
 mod keysight;
@@ -51,6 +60,9 @@ mod sds;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/siglent.rs"]
 mod siglent;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/siglent_ssa.rs"]
+mod siglent_ssa;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/tek.rs"]
 mod tek;

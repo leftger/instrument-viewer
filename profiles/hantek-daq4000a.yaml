@@ -1,0 +1,7 @@
+# Hantek DAQ4000A data acquisition / scanning multimeter. The scan list
+# (`ROUTe:SCAN`), per-function configuration (`FUNC "...",(@ch_list)`) and the
+# comma-separated `READ?` scan live in the `daq4000a` driver.
+idn_matches:
+  - "DAQ4000A"
+name: "Hantek DAQ4000A"
+driver: daq4000a

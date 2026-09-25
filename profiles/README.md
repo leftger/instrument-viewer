@@ -51,12 +51,12 @@ have no write). `parse` is how the query reply is read:
 A profile is normally served entirely by the generic YAML engine. When an
 instrument has reply formats or transfers too odd to express as templates, the
 profile can name one of the hand-written drivers — `tek`, `rigol`, `ds1000z`,
-`dm3058`, `dsa800`, `sds`, `siglent`, `afg`, or `keysight` — and every
-behavior method delegates to it
+`dm3058`, `dsa800`, `hdm3000`, `daq4000a`, `hrdo2000`, `siglent_ssa`, `sds`,
+`siglent`, `afg`, or `keysight` — and every behavior method delegates to it
 while the profile remains the catalog entry. The bundled profiles use this for
 the quirkiest instruments (Rigol's chunked RAW transfer, the SDS `WF? DAT2`
-scheme, supply pairing); over time the drivers shrink as the generic engine
-grows.
+scheme, the Hantek 128-byte waveform header, supply pairing); over time the
+drivers shrink as the generic engine grows.
 
 ## Bundled device profiles
 
@@ -69,6 +69,10 @@ Every supported instrument family has a profile in this directory:
 | `rigol-dho900.yaml` | Rigol DHO900 | `rigol` |
 | `rigol-dm3058.yaml` | Rigol DM3058/DM3058E multimeter | `dm3058` |
 | `rigol-dsa800.yaml` | Rigol DSA800 spectrum analyzer | `dsa800` |
+| `hantek-hdm3000.yaml` | Hantek HDM3000 multimeter | `hdm3000` |
+| `hantek-daq4000a.yaml` | Hantek DAQ4000A scan/DAQ | `daq4000a` |
+| `hantek-hrdo2000.yaml` | Hantek HRDO2000 oscilloscope | `hrdo2000` |
+| `siglent-ssa.yaml` | Siglent SSA/SVA/SHA analyzers | `siglent_ssa` (best-effort) |
 | `siglent-sdg1000x.yaml` | Siglent SDG1000X | `siglent` |
 | `keysight-e36200.yaml` | Keysight E36200/E36300 supplies | `keysight` |
 | `tek-afg3000.yaml` | Tektronix AFG3000 | `afg` |
