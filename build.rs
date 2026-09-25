@@ -67,7 +67,7 @@ fn validate(path: &Path, text: &str) {
             .as_str()
             .unwrap_or_else(|| panic!("{}: driver must be a string", path.display()));
         match driver {
-            "tek" | "rigol" | "sds" | "siglent" | "afg" | "keysight" => {}
+            "tek" | "rigol" | "ds1000z" | "sds" | "siglent" | "afg" | "keysight" => {}
             other => panic!("{}: unknown driver {other:?}", path.display()),
         }
     }

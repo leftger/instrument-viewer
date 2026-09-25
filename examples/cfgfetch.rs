@@ -25,6 +25,9 @@ mod backend;
 #[path = "../src/config.rs"]
 mod config;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/ds1000z.rs"]
+mod ds1000z;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/keysight.rs"]
 mod keysight;
 #[allow(dead_code, unused_imports)]

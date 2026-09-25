@@ -612,6 +612,7 @@ fn builtin_profiles() -> Vec<InstrumentProfile> {
     [
         include_str!("../profiles/example.yaml"),
         include_str!("../profiles/tek-mdo3000.yaml"),
+        include_str!("../profiles/rigol-mso1000z.yaml"),
         include_str!("../profiles/rigol-dho900.yaml"),
         include_str!("../profiles/siglent-sdg1000x.yaml"),
         include_str!("../profiles/keysight-e36200.yaml"),
@@ -677,6 +678,7 @@ fn driver_for(name: &str, idn: &str) -> Option<Box<dyn Backend>> {
     match name {
         "tek" => Some(Box::new(crate::tek::Tek)),
         "rigol" => Some(Box::new(crate::rigol::Rigol::from_idn(idn))),
+        "ds1000z" => Some(Box::new(crate::ds1000z::Ds1000z::from_idn(idn))),
         "sds" => Some(Box::new(crate::sds::Sds::from_idn(idn))),
         "siglent" => Some(Box::new(crate::siglent::Siglent::from_idn(idn))),
         "afg" => Some(Box::new(crate::afg::Afg::from_idn(idn))),
@@ -732,6 +734,10 @@ mod tests {
         let cases = [
             ("TEKTRONIX,MDO3024,SN,1.0", "Tektronix"),
             ("RIGOL TECHNOLOGIES,DHO924S,SN,00.01.05", "Rigol DHO924S"),
+            (
+                "RIGOL TECHNOLOGIES,MSO1104Z,DS1ZD123456789,00.04.03.SP2",
+                "Rigol MSO1104Z",
+            ),
             ("Siglent Technologies,SDG1032X,SN,1.0", "Siglent SDG1032X"),
             (
                 "Keysight Technologies,E36233A,SN,1.1.1-1.0.3-1.01",
