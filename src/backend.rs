@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::config::{ChannelConfig, HorizontalConfig, InstrumentConfig, TriggerConfig};
 use crate::scpi::{ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
@@ -117,6 +118,32 @@ pub trait Backend: Send {
         ))
     }
 
+    /// Read a full settings snapshot. Generators and supplies have their own
+    /// state model and override this; the default handles a scope's
+    /// channel/horizontal/trigger layout. The callee is generic over
+    /// `Backend + ?Sized` so `self` passes through without an unsized coercion.
+    fn read_config(&self, s: &mut ScpiSession) -> Result<InstrumentConfig, ScpiError> {
+        crate::config::read_scope_config(s, self)
+    }
+
+    /// Apply one channel's settings. Generators and supplies override this;
+    /// the default writes a scope channel's coupling/termination/bandwidth/scale.
+    fn apply_channel(&self, s: &mut ScpiSession, n: usize, ch: &ChannelConfig) -> Result<(), ScpiError> {
+        crate::config::apply_scope_channel(self, s, n, ch)
+    }
+
+    /// Apply the timebase. Generators and supplies have no timebase and
+    /// override this as a no-op.
+    fn apply_horizontal(&self, s: &mut ScpiSession, h: &HorizontalConfig) -> Result<(), ScpiError> {
+        crate::config::apply_scope_horizontal(s, h)
+    }
+
+    /// Apply the edge trigger. Generators and supplies have no trigger and
+    /// override this as a no-op.
+    fn apply_trigger(&self, s: &mut ScpiSession, t: &TriggerConfig) -> Result<(), ScpiError> {
+        crate::config::apply_scope_trigger(self, s, t)
+    }
+
     fn fetch_channel(&self, s: &mut ScpiSession, ch: &str) -> Result<ChannelTrace, WaveformError>;
 
     /// Fetch all requested channels. Most instruments produce one trace per
@@ -147,12 +174,18 @@ pub trait Backend: Send {
 /// Pick a backend from the `*IDN?` response, defaulting to Tektronix.
 pub fn from_idn(idn: &str) -> Box<dyn Backend> {
     let upper = idn.to_ascii_uppercase();
-    if upper.contains("SIGLENT") || upper.contains(",SDG") {
+    // Checked before the generic SIGLENT/SDG branch below: an SDS oscilloscope's
+    // IDN also contains "SIGLENT", so the scope-vs-generator split must come first.
+    if upper.contains("SDS") {
+        Box::new(crate::sds::Sds::from_idn(idn))
+    } else if upper.contains("SIGLENT") || upper.contains(",SDG") {
         Box::new(crate::siglent::Siglent::from_idn(idn))
     } else if crate::keysight::is_power_supply_idn(&upper) {
         Box::new(crate::keysight::KeysightPsu::from_idn(idn))
     } else if upper.contains("RIGOL") {
         Box::new(crate::rigol::Rigol::from_idn(idn))
+    } else if upper.contains("AFG") {
+        Box::new(crate::afg::Afg::from_idn(idn))
     } else {
         Box::new(crate::tek::Tek)
     }
@@ -194,6 +227,16 @@ mod tests {
         assert_eq!(psu.capabilities().channel_count, 1);
         // An unreadable IDN must not lose the historically supported instrument.
         assert_eq!(from_idn("").name(), "Tektronix");
+
+        let afg = from_idn("TEKTRONIX,AFG3051C,SN,SCPI:99.0 FV:2.7");
+        assert_eq!(afg.name(), "Tektronix AFG3051C");
+        assert_eq!(afg.kind(), InstrumentKind::Generator);
+        assert_eq!(afg.capabilities().channel_count, 1);
+
+        let sds = from_idn("Siglent Technologies,SDS1104X-E,SDS1EBAC0L0098,7.6.1.15");
+        assert_eq!(sds.name(), "Siglent SDS1104X-E");
+        assert_eq!(sds.kind(), InstrumentKind::Oscilloscope);
+        assert_eq!(sds.capabilities().channel_count, 4);
     }
 
     #[test]

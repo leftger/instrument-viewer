@@ -1,3 +1,4 @@
+mod afg;
 mod app;
 mod backend;
 mod cli;
@@ -10,6 +11,7 @@ mod plotdata;
 mod prefs;
 mod rigol;
 mod scpi;
+mod sds;
 mod siglent;
 mod stack;
 mod tek;

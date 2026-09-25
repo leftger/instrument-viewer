@@ -1,4 +1,4 @@
-use crate::backend::{Backend, InstrumentCapabilities, InstrumentKind};
+use crate::backend::{Backend, InstrumentCapabilities};
 use crate::scpi::{parse_bool, parse_character, parse_count, parse_f64, ScpiError, ScpiSession};
 
 #[derive(Clone, Debug)]
@@ -245,12 +245,20 @@ pub fn read_config(
     session: &mut ScpiSession,
     backend: &dyn Backend,
 ) -> Result<InstrumentConfig, ScpiError> {
-    if backend.kind() == InstrumentKind::Generator {
-        return crate::siglent::read_config(session, backend);
-    }
-    if backend.kind() == InstrumentKind::Supply {
-        return crate::keysight::read_config(session, backend);
-    }
+    backend.read_config(session)
+}
+
+/// The oscilloscope-style channel/horizontal/trigger layout shared by Tek and
+/// Rigol scopes. This is `Backend::read_config`'s default; generators and
+/// supplies override the trait method instead of calling this.
+///
+/// Generic rather than `&dyn Backend`: the default trait method passes `self`
+/// (an unsized-unless-bounded type) straight through, which cannot be coerced
+/// to a trait object.
+pub(crate) fn read_scope_config<B: Backend + ?Sized>(
+    session: &mut ScpiSession,
+    backend: &B,
+) -> Result<InstrumentConfig, ScpiError> {
     let channels = [
         read_channel(session, backend, 1)?,
         read_channel(session, backend, 2)?,
@@ -288,9 +296,9 @@ pub fn read_config(
     })
 }
 
-fn read_channel(
+fn read_channel<B: Backend + ?Sized>(
     session: &mut ScpiSession,
-    backend: &dyn Backend,
+    backend: &B,
     number: usize,
 ) -> Result<ChannelConfig, ScpiError> {
     Ok(ChannelConfig {
@@ -308,43 +316,71 @@ fn read_channel(
     })
 }
 
+/// The oscilloscope-style per-channel apply shared by Tek and Rigol scopes.
+/// This is `Backend::apply_channel`'s default; see `read_scope_config` for
+/// why it is generic instead of `&dyn Backend`.
+pub(crate) fn apply_scope_channel<B: Backend + ?Sized>(
+    backend: &B,
+    session: &mut ScpiSession,
+    n: usize,
+    ch: &ChannelConfig,
+) -> Result<(), ScpiError> {
+    // Probe gain changes the engineering units of scale/offset, so set it first.
+    session.write(&format!("CH{n}:PROBE:GAIN {}", ch.probe_gain))?;
+    backend.set_channel_enabled(session, n, ch.enabled)?;
+    session.write(&format!("CH{n}:COUPLING {}", ch.coupling))?;
+    backend.set_termination_ohms(session, n, ch.termination_ohms)?;
+    backend.set_bandwidth_hz(session, n, ch.bandwidth_hz)?;
+    session.write(&format!("CH{n}:SCALE {}", ch.scale))?;
+    session.write(&format!("CH{n}:POSITION {}", ch.position))?;
+    session.write(&format!("CH{n}:OFFSET {}", ch.offset))?;
+    Ok(())
+}
+
+/// The oscilloscope-style horizontal apply shared by Tek and Rigol scopes.
+/// This is `Backend::apply_horizontal`'s default; see `read_scope_config` for
+/// why it takes a plain `&mut ScpiSession` with no backend parameter (it
+/// needs none) and why the trigger sibling below is generic.
+pub(crate) fn apply_scope_horizontal(
+    session: &mut ScpiSession,
+    h: &HorizontalConfig,
+) -> Result<(), ScpiError> {
+    session.write(&format!("HORIZONTAL:RECORDLENGTH {}", h.record_length))?;
+    session.write(&format!("HORIZONTAL:SCALE {}", h.scale))?;
+    session.write(&format!("HORIZONTAL:POSITION {}", h.position))?;
+    Ok(())
+}
+
+/// The oscilloscope-style edge-trigger apply shared by Tek and Rigol scopes.
+/// This is `Backend::apply_trigger`'s default; see `read_scope_config` for why
+/// it is generic instead of `&dyn Backend`.
+pub(crate) fn apply_scope_trigger<B: Backend + ?Sized>(
+    backend: &B,
+    session: &mut ScpiSession,
+    t: &TriggerConfig,
+) -> Result<(), ScpiError> {
+    session.write("TRIGGER:A:TYPE EDGE")?;
+    session.write(&format!("TRIGGER:A:MODE {}", t.mode))?;
+    session.write(&format!("TRIGGER:A:EDGE:SOURCE {}", t.source))?;
+    session.write(&format!("TRIGGER:A:EDGE:SLOPE {}", t.slope))?;
+    session.write(&format!("TRIGGER:A:EDGE:COUPLING {}", t.coupling))?;
+    backend.set_trigger_level(session, &t.source, t.level)
+}
+
 pub fn apply_section(
     session: &mut ScpiSession,
     backend: &dyn Backend,
     section: &ConfigSection,
 ) -> Result<(), ScpiError> {
     match section {
-        ConfigSection::Channel(index, ch) if backend.kind() == InstrumentKind::Generator => {
-            crate::siglent::apply_channel(session, index + 1, ch)?;
-        }
-        ConfigSection::Channel(index, ch) if backend.kind() == InstrumentKind::Supply => {
-            crate::keysight::apply_channel(session, backend, index + 1, ch)?;
-        }
         ConfigSection::Channel(index, ch) => {
-            let n = index + 1;
-            // Probe gain changes the engineering units of scale/offset, so set it first.
-            session.write(&format!("CH{n}:PROBE:GAIN {}", ch.probe_gain))?;
-            backend.set_channel_enabled(session, n, ch.enabled)?;
-            session.write(&format!("CH{n}:COUPLING {}", ch.coupling))?;
-            backend.set_termination_ohms(session, n, ch.termination_ohms)?;
-            backend.set_bandwidth_hz(session, n, ch.bandwidth_hz)?;
-            session.write(&format!("CH{n}:SCALE {}", ch.scale))?;
-            session.write(&format!("CH{n}:POSITION {}", ch.position))?;
-            session.write(&format!("CH{n}:OFFSET {}", ch.offset))?;
+            backend.apply_channel(session, index + 1, ch)?;
         }
-        ConfigSection::Horizontal(_) | ConfigSection::Trigger(_) if !backend.kind().is_scope() => {}
         ConfigSection::Horizontal(h) => {
-            session.write(&format!("HORIZONTAL:RECORDLENGTH {}", h.record_length))?;
-            session.write(&format!("HORIZONTAL:SCALE {}", h.scale))?;
-            session.write(&format!("HORIZONTAL:POSITION {}", h.position))?;
+            backend.apply_horizontal(session, h)?;
         }
         ConfigSection::Trigger(t) => {
-            session.write("TRIGGER:A:TYPE EDGE")?;
-            session.write(&format!("TRIGGER:A:MODE {}", t.mode))?;
-            session.write(&format!("TRIGGER:A:EDGE:SOURCE {}", t.source))?;
-            session.write(&format!("TRIGGER:A:EDGE:SLOPE {}", t.slope))?;
-            session.write(&format!("TRIGGER:A:EDGE:COUPLING {}", t.coupling))?;
-            backend.set_trigger_level(session, &t.source, t.level)?;
+            backend.apply_trigger(session, t)?;
         }
         ConfigSection::Acquisition(a) => {
             backend.apply_acquisition(session, &a.mode, &a.stop_after, a.running)?;

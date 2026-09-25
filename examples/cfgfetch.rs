@@ -13,6 +13,9 @@ mod waveform;
 // These refer to each other as `crate::<module>`, which resolves to the modules
 // declared here because an example's crate root is this file.
 #[allow(dead_code, unused_imports)]
+#[path = "../src/afg.rs"]
+mod afg;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/backend.rs"]
 mod backend;
 #[allow(dead_code, unused_imports)]
@@ -24,6 +27,9 @@ mod keysight;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/rigol.rs"]
 mod rigol;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/sds.rs"]
+mod sds;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/siglent.rs"]
 mod siglent;

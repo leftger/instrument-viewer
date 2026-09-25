@@ -469,6 +469,35 @@ impl Backend for KeysightPsu {
         Ok(())
     }
 
+    fn apply_horizontal(
+        &self,
+        _s: &mut ScpiSession,
+        _h: &crate::config::HorizontalConfig,
+    ) -> Result<(), ScpiError> {
+        Ok(())
+    }
+
+    fn apply_trigger(
+        &self,
+        _s: &mut ScpiSession,
+        _t: &crate::config::TriggerConfig,
+    ) -> Result<(), ScpiError> {
+        Ok(())
+    }
+
+    fn read_config(&self, s: &mut ScpiSession) -> Result<InstrumentConfig, ScpiError> {
+        read_config(s, self)
+    }
+
+    fn apply_channel(
+        &self,
+        s: &mut ScpiSession,
+        n: usize,
+        ch: &ChannelConfig,
+    ) -> Result<(), ScpiError> {
+        apply_channel(s, self, n, ch)
+    }
+
     fn fetch_channel(&self, s: &mut ScpiSession, ch: &str) -> Result<ChannelTrace, WaveformError> {
         let n = channel_number(ch)
             .ok_or_else(|| WaveformError::Parse(format!("PSU channel {ch} is not CH1/CH2/CH3")))?;
