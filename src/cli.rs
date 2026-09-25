@@ -34,7 +34,7 @@ pub struct Cli {
 pub enum Command {
     /// Launch the graphical viewer (the default with no subcommand).
     Gui,
-    /// Browse mDNS LXI and probe ARP neighbors for SCPI instruments.
+    /// Browse mDNS and probe link-local (`169.254.x.x`) neighbors for SCPI instruments.
     Discover,
     /// Print the current channel, horizontal, trigger and acquisition settings.
     Get,
@@ -105,12 +105,12 @@ pub struct ChannelArgs {
     channel: usize,
     #[arg(long)]
     enabled: Option<bool>,
-    /// Vertical scale, in volts/div or with an SI suffix (for example 500mV).
+    /// Scope volts/div, generator amplitude (Vpp), or supply voltage setpoint.
     #[arg(long, value_parser = parse_si)]
     scale: Option<f64>,
     #[arg(long)]
     position: Option<f64>,
-    /// Vertical offset, in volts or with an SI suffix.
+    /// Scope offset in volts, generator offset, or supply current limit in amps.
     #[arg(long, value_parser = parse_si)]
     offset: Option<f64>,
     #[arg(long, value_enum)]
@@ -314,6 +314,9 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                 "Acquisition mode={} stop_after={} running={}",
                 c.acquisition.mode, c.acquisition.stop_after, c.acquisition.running
             );
+            if !c.output_pair.is_empty() {
+                println!("Output pairing {}", c.output_pair);
+            }
         }
         Command::Export {
             format,
@@ -325,14 +328,20 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             let format = resolve_format(*format, out.as_deref())?;
             let config = read_config(&mut session, backend)?;
             let channels = if channels.is_empty() {
-                let enabled: Vec<String> = (0..4)
-                    .filter(|&i| config.channels[i].enabled)
-                    .map(|i| format!("CH{}", i + 1))
-                    .collect();
-                if enabled.is_empty() {
-                    vec!["CH1".into()]
+                if backend.kind() == crate::backend::InstrumentKind::Supply {
+                    (1..=capabilities.channel_count)
+                        .map(|i| format!("CH{i}"))
+                        .collect()
                 } else {
-                    enabled
+                    let enabled: Vec<String> = (0..4)
+                        .filter(|&i| config.channels[i].enabled)
+                        .map(|i| format!("CH{}", i + 1))
+                        .collect();
+                    if enabled.is_empty() {
+                        vec!["CH1".into()]
+                    } else {
+                        enabled
+                    }
                 }
             } else {
                 channels
@@ -343,10 +352,7 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
             if *sequence {
                 backend.wait_sequence(&mut session, Duration::from_secs(30))?;
             }
-            let mut traces = Vec::new();
-            for ch in &channels {
-                traces.push(backend.fetch_channel(&mut session, ch)?);
-            }
+            let traces = backend.fetch_channels(&mut session, &channels)?;
             let captured_at =
                 crate::timestamp::CaptureTime::for_session(&mut session, backend.kind());
             let body = export::render(&export::ExportOptions {

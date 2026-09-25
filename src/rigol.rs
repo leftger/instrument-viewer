@@ -102,6 +102,7 @@ impl Backend for Rigol {
             kind: crate::backend::InstrumentKind::Oscilloscope,
             channel_count: 4,
             wave_types: Vec::new(),
+            output_pairs: Vec::new(),
         }
     }
 

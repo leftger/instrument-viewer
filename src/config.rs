@@ -49,6 +49,9 @@ pub struct InstrumentConfig {
     pub horizontal: HorizontalConfig,
     pub trigger: TriggerConfig,
     pub acquisition: AcquisitionConfig,
+    /// Dual-output supply pairing: `OFF`, `PARALLEL`, or `SERIES`. Empty on
+    /// scopes, generators, and single-output supplies.
+    pub output_pair: String,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +60,8 @@ pub enum ConfigSection {
     Horizontal(HorizontalConfig),
     Trigger(TriggerConfig),
     Acquisition(AcquisitionConfig),
+    /// Series/parallel coupling on a dual-output supply.
+    OutputPair(String),
 }
 
 /// Preserve instrument-reported values even when a model or firmware exposes a
@@ -196,6 +201,9 @@ pub fn validate_section(
                 &capabilities.stop_after,
             )?;
         }
+        ConfigSection::OutputPair(mode) => {
+            require_string("output pairing", mode, &capabilities.output_pairs)?;
+        }
     }
     Ok(())
 }
@@ -276,6 +284,7 @@ pub fn read_config(
         horizontal,
         trigger,
         acquisition,
+        output_pair: String::new(),
     })
 }
 
@@ -339,6 +348,9 @@ pub fn apply_section(
         }
         ConfigSection::Acquisition(a) => {
             backend.apply_acquisition(session, &a.mode, &a.stop_after, a.running)?;
+        }
+        ConfigSection::OutputPair(mode) => {
+            crate::keysight::apply_output_pair(session, backend, mode)?;
         }
     }
     // Wait until all preceding setters have been processed before reporting success.
@@ -480,6 +492,7 @@ mod tests {
                 stop_after: "CUSTOM".into(),
                 running: true,
             },
+            output_pair: String::new(),
         };
 
         include_current_values(&mut capabilities, &config);

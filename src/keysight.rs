@@ -9,11 +9,17 @@ use crate::config::{
 use crate::scpi::{parse_f64, ScpiError, ScpiSession};
 use crate::waveform::{ChannelTrace, WaveformError};
 
-/// Keysight/Agilent E36xx bench supplies.
+/// Keysight/Agilent E36xx bench supplies on LAN socket **5025**.
 ///
-/// The E36231A is a single 30 V / 20 A / 200 W output on LAN socket **5025**.
-/// Programming is E3633A-compatible: `INST:NSEL`, `VOLT`, `CURR`, `OUTP`,
-/// `MEAS:VOLT?`, `MEAS:CURR?` (E36200 programming guide).
+/// E36200 programming is `INST:NSEL` (multi-output models only), `VOLT`,
+/// `CURR`, `OUTP`, `MEAS:VOLT?`, and `MEAS:CURR?`. The E36233A is two
+/// autoranged 30 V / 20 A outputs, each limited to 200 W delivered. Output 2
+/// is selected with `INST:NSEL 2`. `OUTP:PAIR` ties the two outputs in series
+/// or parallel; output 2 then follows output 1. Verified against an E36233A
+/// (firmware 1.1.1-1.0.3-1.01).
+///
+/// The single-output E36231A answers `INST:NSEL` with an undefined header, so
+/// that command is sent only when there is more than one output.
 ///
 /// The older E3631A triple-output (P6V / P25V / N25V) uses the same
 /// `APPLy` / `INST:SEL` / `OUTP` pattern as
@@ -44,6 +50,9 @@ struct Output {
     min_v: f64,
     max_v: f64,
     max_a: f64,
+    /// Maximum power the output can deliver. Programming may accept a
+    /// voltage/current pair outside this; the output folds back at the limit.
+    max_w: f64,
 }
 
 const E36231: &[Output] = &[Output {
@@ -52,6 +61,7 @@ const E36231: &[Output] = &[Output {
     min_v: 0.0,
     max_v: 30.9,
     max_a: 20.6,
+    max_w: 200.0,
 }];
 
 const E36232: &[Output] = &[Output {
@@ -60,6 +70,7 @@ const E36232: &[Output] = &[Output {
     min_v: 0.0,
     max_v: 61.8,
     max_a: 10.3,
+    max_w: 200.0,
 }];
 
 const E36233: &[Output] = &[
@@ -69,6 +80,7 @@ const E36233: &[Output] = &[
         min_v: 0.0,
         max_v: 30.9,
         max_a: 20.6,
+        max_w: 200.0,
     },
     Output {
         label: "CH2",
@@ -76,6 +88,7 @@ const E36233: &[Output] = &[
         min_v: 0.0,
         max_v: 30.9,
         max_a: 20.6,
+        max_w: 200.0,
     },
 ];
 
@@ -86,6 +99,7 @@ const E36234: &[Output] = &[
         min_v: 0.0,
         max_v: 61.8,
         max_a: 10.3,
+        max_w: 200.0,
     },
     Output {
         label: "CH2",
@@ -93,6 +107,7 @@ const E36234: &[Output] = &[
         min_v: 0.0,
         max_v: 61.8,
         max_a: 10.3,
+        max_w: 200.0,
     },
 ];
 
@@ -103,6 +118,7 @@ const E3631: &[Output] = &[
         min_v: 0.0,
         max_v: 6.0,
         max_a: 5.0,
+        max_w: 30.0,
     },
     Output {
         label: "P25V",
@@ -110,6 +126,7 @@ const E3631: &[Output] = &[
         min_v: 0.0,
         max_v: 25.0,
         max_a: 1.0,
+        max_w: 25.0,
     },
     Output {
         label: "N25V",
@@ -117,6 +134,7 @@ const E3631: &[Output] = &[
         min_v: -25.0,
         max_v: 0.0,
         max_a: 1.0,
+        max_w: 25.0,
     },
 ];
 
@@ -126,6 +144,7 @@ const E3633: &[Output] = &[Output {
     min_v: 0.0,
     max_v: 20.0,
     max_a: 10.0,
+    max_w: 200.0,
 }];
 
 pub fn is_power_supply_idn(idn: &str) -> bool {
@@ -191,7 +210,87 @@ fn select_command(profile: &Profile, out: &Output) -> Option<String> {
     })
 }
 
+fn supports_pairing(profile: &Profile) -> bool {
+    profile.dialect == Dialect::E36200 && profile.outputs.len() >= 2
+}
+
+fn output_of(profile: &Profile, n: usize) -> Result<&'static Output, ScpiError> {
+    let outputs: &'static [Output] = profile.outputs;
+    outputs
+        .get(n.wrapping_sub(1))
+        .ok_or_else(|| ScpiError::Unsupported(format!("PSU has no output {n}")))
+}
+
+/// `OUTP:PAIR?` short forms are `OFF`, `PAR`, and `SER`.
+fn canonical_pair(text: &str) -> &'static str {
+    let upper = text.trim().trim_matches('"').to_ascii_uppercase();
+    if upper.starts_with("PAR") {
+        "PARALLEL"
+    } else if upper.starts_with("SER") {
+        "SERIES"
+    } else {
+        "OFF"
+    }
+}
+
+/// `Some(mode)` when output 2 is slaved to output 1.
+fn paired_mode(
+    session: &mut ScpiSession,
+    profile: &Profile,
+) -> Result<Option<&'static str>, ScpiError> {
+    if !supports_pairing(profile) {
+        return Ok(None);
+    }
+    let mode = canonical_pair(&session.query("OUTP:PAIR?")?);
+    if mode == "OFF" {
+        Ok(None)
+    } else {
+        Ok(Some(mode))
+    }
+}
+
+fn check_supply_error(session: &mut ScpiSession) -> Result<(), ScpiError> {
+    let err = session.query("SYST:ERR?")?;
+    let trimmed = err.trim();
+    if trimmed.starts_with("+0") || trimmed.starts_with("0,") || trimmed == "0" {
+        Ok(())
+    } else {
+        Err(ScpiError::Unsupported(format!(
+            "supply rejected the setting: {err}"
+        )))
+    }
+}
+
+pub fn read_output_pair(
+    session: &mut ScpiSession,
+    backend: &dyn Backend,
+) -> Result<String, ScpiError> {
+    let profile = profile_for_model(backend.name());
+    if !supports_pairing(&profile) {
+        return Ok(String::new());
+    }
+    Ok(canonical_pair(&session.query("OUTP:PAIR?")?).to_string())
+}
+
+pub fn apply_output_pair(
+    session: &mut ScpiSession,
+    backend: &dyn Backend,
+    mode: &str,
+) -> Result<(), ScpiError> {
+    let profile = profile_for_model(backend.name());
+    if !supports_pairing(&profile) {
+        return Err(ScpiError::Unsupported(
+            "this supply has no series/parallel pairing".into(),
+        ));
+    }
+    let mode = canonical_pair(mode);
+    session.write("*CLS")?;
+    session.write(&format!("OUTP:PAIR {mode}"))?;
+    check_supply_error(session)
+}
+
 fn profile_for_model(model: &str) -> Profile {
+    let model = model.to_ascii_uppercase();
     if model.contains("E3631") {
         Profile {
             dialect: Dialect::E3631,
@@ -256,6 +355,12 @@ impl Backend for KeysightPsu {
             .iter()
             .map(|o| o.max_a)
             .fold(0.0, f64::max);
+        let max_w = self
+            .profile
+            .outputs
+            .iter()
+            .map(|o| o.max_w)
+            .fold(0.0, f64::max);
         let names: String = self
             .profile
             .outputs
@@ -263,6 +368,11 @@ impl Backend for KeysightPsu {
             .map(|o| o.label)
             .collect::<Vec<_>>()
             .join(", ");
+        let pairing = if supports_pairing(&self.profile) {
+            " Series stacks the voltages; parallel stacks the currents; output 2 follows output 1."
+        } else {
+            ""
+        };
         InstrumentCapabilities {
             channel_couplings: vec!["DC".into()],
             terminations: vec![ValueChoice::new("fixed", 1e6)],
@@ -275,16 +385,22 @@ impl Backend for KeysightPsu {
             acquisition_modes: vec!["MEASURE".into()],
             stop_after: vec!["RUNSTOP".into()],
             channel_hint: Some(format!(
-                "{names}. Voltage setpoint and current limit; Fetch plots MEAS:VOLT? as a DC line. Max {max_v} V / {max_a} A."
+                "{names}. Voltage setpoint and current limit. Fetch reads one voltage and current sample per output. A second reading in the same session starts the time plot. Programming max {max_v} V / {max_a} A; delivered power is limited to {max_w} W per output.{pairing}"
             )),
-            horizontal_hint: Some("Fetch is a one-second DC measurement, not a scope capture.".into()),
+            horizontal_hint: Some(
+                "Each Fetch is one instant. Time on the plot is seconds since the first reading in this session.".into(),
+            ),
             acquisition_hint: Some(
-                "This power supply does not acquire waveforms; Fetch reads MEAS:VOLT?/MEAS:CURR?."
-                    .into(),
+                "This power supply does not acquire waveforms. Fetch reads MEAS:VOLT? and MEAS:CURR? once.".into(),
             ),
             kind: InstrumentKind::Supply,
             channel_count: n,
             wave_types: Vec::new(),
+            output_pairs: if supports_pairing(&self.profile) {
+                vec!["OFF".into(), "PARALLEL".into(), "SERIES".into()]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -357,7 +473,24 @@ impl Backend for KeysightPsu {
         let n = channel_number(ch)
             .ok_or_else(|| WaveformError::Parse(format!("PSU channel {ch} is not CH1/CH2/CH3")))?;
         let (v, _i) = self.measure(s, n)?;
-        Ok(dc_trace(&format!("CH{n}"), v))
+        Ok(dc_trace(&format!("CH{n} Voltage"), "V", v))
+    }
+
+    fn fetch_channels(
+        &self,
+        s: &mut ScpiSession,
+        channels: &[String],
+    ) -> Result<Vec<ChannelTrace>, WaveformError> {
+        let mut traces = Vec::with_capacity(channels.len() * 2);
+        for ch in channels {
+            let n = channel_number(ch).ok_or_else(|| {
+                WaveformError::Parse(format!("PSU channel {ch} is not CH1/CH2/CH3"))
+            })?;
+            let (volts, amps) = self.measure(s, n)?;
+            traces.push(dc_trace(&format!("CH{n} Voltage"), "V", volts));
+            traces.push(dc_trace(&format!("CH{n} Current"), "A", amps));
+        }
+        Ok(traces)
     }
 
     fn wait_sequence(&self, _s: &mut ScpiSession, _timeout: Duration) -> Result<(), ScpiError> {
@@ -424,6 +557,7 @@ pub fn read_config(
             stop_after: "RUNSTOP".into(),
             running,
         },
+        output_pair: read_output_pair(session, backend)?,
     })
 }
 
@@ -434,15 +568,28 @@ pub fn apply_channel(
     ch: &ChannelConfig,
 ) -> Result<(), ScpiError> {
     let profile = profile_for_model(backend.name());
-    let out = profile
-        .outputs
-        .get(n.wrapping_sub(1))
-        .ok_or_else(|| ScpiError::Unsupported(format!("PSU has no output {n}")))?;
+    let out = output_of(&profile, n)?;
+    session.write("*CLS")?;
     if let Some(command) = select_command(&profile, out) {
         session.write(&command)?;
     }
-    let volt = ch.scale.clamp(out.min_v, out.max_v);
-    let curr = ch.offset.abs().clamp(0.0, out.max_a);
+    if let Some(pair) = paired_mode(session, &profile)? {
+        if n > 1 {
+            return Err(ScpiError::Unsupported(format!(
+                "output {n} follows output 1 while outputs are in {pair} mode"
+            )));
+        }
+    }
+    let (min_v, max_v, max_a) = match profile.dialect {
+        Dialect::E36200 => (
+            query_f64(session, "VOLT? MIN")?,
+            query_f64(session, "VOLT? MAX")?,
+            query_f64(session, "CURR? MAX")?,
+        ),
+        Dialect::E3631 => (out.min_v, out.max_v, out.max_a),
+    };
+    let volt = ch.scale.clamp(min_v, max_v);
+    let curr = ch.offset.abs().clamp(0.0, max_a);
     match profile.dialect {
         Dialect::E3631 => session.write(&format!("APPL {},{volt},{curr}", out.inst))?,
         Dialect::E36200 => {
@@ -451,7 +598,7 @@ pub fn apply_channel(
         }
     }
     session.write(&format!("OUTP {}", if ch.enabled { "ON" } else { "OFF" }))?;
-    Ok(())
+    check_supply_error(session)
 }
 
 fn read_output(
@@ -483,15 +630,13 @@ fn read_setpoints(
     backend: &dyn Backend,
     n: usize,
 ) -> Result<(f64, f64), ScpiError> {
-    // Re-select through the backend's channel_enabled path already selected;
-    // query VOLT?/CURR? on the selected output. For E3631A, APPL? is the
-    // Python driver's getter.
-    if backend.name().contains("E3631") {
-        let inst = E3631
-            .get(n.wrapping_sub(1))
-            .map(|o| o.inst)
-            .unwrap_or("P6V");
-        let resp = session.query(&format!("APPL? {inst}"))?;
+    let profile = profile_for_model(backend.name());
+    let out = output_of(&profile, n)?;
+    if let Some(command) = select_command(&profile, out) {
+        session.write(&command)?;
+    }
+    if profile.dialect == Dialect::E3631 {
+        let resp = session.query(&format!("APPL? {}", out.inst))?;
         return parse_apply_query(&resp);
     }
     let v = query_f64(session, "VOLT?")?;
@@ -527,16 +672,12 @@ fn dummy_channel() -> ChannelConfig {
     }
 }
 
-fn dc_trace(ch: &str, volts: f64) -> ChannelTrace {
-    const N: usize = 200;
-    const SPAN: f64 = 1.0;
-    let dt = SPAN / (N.saturating_sub(1).max(1) as f64);
-    let points = (0..N).map(|i| [i as f64 * dt, volts]).collect();
+fn dc_trace(ch: &str, unit: &str, value: f64) -> ChannelTrace {
     ChannelTrace {
         channel: ch.to_string(),
         x_unit: "s".into(),
-        y_unit: "V".into(),
-        points,
+        y_unit: unit.into(),
+        points: vec![[0.0, value]],
     }
 }
 
@@ -565,8 +706,16 @@ mod tests {
         assert_eq!(psu.kind(), InstrumentKind::Supply);
         assert_eq!(psu.name(), "Keysight E36231A");
         assert_eq!(psu.capabilities().channel_count, 1);
-        let dual = from_idn("Keysight Technologies,E36233A,MY,1.0");
+        let dual = from_idn("Keysight Technologies,E36233A,MY61009393,1.1.1-1.0.3-1.01");
         assert_eq!(dual.capabilities().channel_count, 2);
+        assert_eq!(
+            dual.capabilities().output_pairs,
+            vec![
+                "OFF".to_string(),
+                "PARALLEL".to_string(),
+                "SERIES".to_string()
+            ]
+        );
         let triple = from_idn("Agilent Technologies,E3631A,0,2.0");
         assert_eq!(triple.kind(), InstrumentKind::Supply);
         assert_eq!(triple.capabilities().channel_count, 3);
@@ -595,5 +744,25 @@ mod tests {
             (6.0, 5.0)
         );
         assert_eq!(parse_apply_query("P6V,6.000,5.000").unwrap(), (6.0, 5.0));
+    }
+
+    #[test]
+    fn pairing_query_forms() {
+        assert_eq!(canonical_pair("OFF"), "OFF");
+        assert_eq!(canonical_pair("PAR"), "PARALLEL");
+        assert_eq!(canonical_pair("PARALLEL"), "PARALLEL");
+        assert_eq!(canonical_pair("SER"), "SERIES");
+        assert_eq!(canonical_pair("SERIES"), "SERIES");
+        assert!(supports_pairing(&profile_for_model("E36233A")));
+        assert!(!supports_pairing(&profile_for_model("E36231A")));
+        assert!(!supports_pairing(&profile_for_model("E3631A")));
+    }
+
+    #[test]
+    fn dc_trace_preserves_measurement_unit() {
+        let current = dc_trace("CH2 Current", "A", 1.25);
+        assert_eq!(current.channel, "CH2 Current");
+        assert_eq!(current.y_unit, "A");
+        assert_eq!(current.points, vec![[0.0, 1.25]]);
     }
 }

@@ -60,8 +60,9 @@ struct Target {
     sources: Vec<String>,
 }
 
-/// Browse LXI/SCPI mDNS, probe ARP/ND neighbors on standard SCPI ports,
-/// then list USB TMC instruments.
+/// Browse LXI/SCPI mDNS and probe ARP neighbors, but only on IPv4
+/// link-local addresses (`169.254.0.0/16`). Instruments here live on a direct
+/// cable; a shared LAN is never probed. USB TMC is still listed.
 pub fn scan(mut progress: impl FnMut(&str)) -> (Vec<FoundScope>, Vec<String>) {
     let mut notes = Vec::new();
     let mut targets: HashMap<IpAddr, Target> = HashMap::new();
@@ -85,7 +86,7 @@ pub fn scan(mut progress: impl FnMut(&str)) -> (Vec<FoundScope>, Vec<String>) {
     }
 
     let mut found = if targets.is_empty() {
-        notes.push("nothing to probe on LAN; USB TMC is still scanned".into());
+        notes.push("nothing to probe on the link-local cable; USB TMC is still scanned".into());
         Vec::new()
     } else {
         progress(&format!(
@@ -345,26 +346,23 @@ fn is_scpi_port(port: u16) -> bool {
     SCPI_PORTS.contains(&port)
 }
 
+/// IPv4 link-local only. `169.254.0.0/24` and `169.254.255.0/24` are reserved
+/// by RFC 3927, and `169.254.169.254` is the cloud metadata address.
 fn usable_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
-            !(v.is_unspecified() || v.is_loopback() || v.is_broadcast() || v.is_multicast())
+            let [_, _, c, d] = v.octets();
+            let reserved = c == 0 || c == 255 || (c == 169 && d == 254);
+            v.is_link_local() && !reserved
         }
-        IpAddr::V6(v) => !(v.is_unspecified() || v.is_loopback() || v.is_multicast()),
+        IpAddr::V6(_) => false,
     }
 }
 
 fn scoped_ip(ip: &ScopedIp) -> Option<IpAddr> {
     match ip {
         ScopedIp::V4(v) => Some(IpAddr::V4(*v.addr())),
-        ScopedIp::V6(v) => {
-            let addr = *v.addr();
-            if addr.is_unicast_link_local() {
-                None
-            } else {
-                Some(IpAddr::V6(addr))
-            }
-        }
+        ScopedIp::V6(_) => None,
         _ => None,
     }
 }
@@ -428,7 +426,7 @@ router.local (192.168.1.1) at aa:bb:cc:dd:ee:ff on en1 ifscope [ethernet]
 ";
         let ips = parse_arp_an(text);
         assert!(ips.contains(&"169.254.6.252".parse().unwrap()));
-        assert!(ips.contains(&"192.168.1.1".parse().unwrap()));
+        assert!(!ips.iter().any(|ip| ip.to_string() == "192.168.1.1"));
         assert!(!ips.iter().any(|ip| ip.to_string() == "169.254.6.1"));
         assert!(!ips.iter().any(|ip| ip.is_loopback()));
     }
@@ -438,10 +436,23 @@ router.local (192.168.1.1) at aa:bb:cc:dd:ee:ff on en1 ifscope [ethernet]
         let text = "\
 IP address       HW type     Flags       HW address            Mask     Device
 169.254.6.252    0x1         0x2         00:11:22:33:44:55     *        eth0
+10.1.2.3         0x1         0x2         00:11:22:33:44:66     *        eth0
 10.0.0.1         0x1         0x0         00:00:00:00:00:00     *        eth0
 ";
         let ips = parse_proc_net_arp(text);
         assert_eq!(ips, vec!["169.254.6.252".parse::<IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn only_link_local_addresses_are_probed() {
+        assert!(usable_ip("169.254.6.252".parse().unwrap()));
+        assert!(usable_ip("169.254.41.241".parse().unwrap()));
+        assert!(!usable_ip("10.140.33.160".parse().unwrap()));
+        assert!(!usable_ip("192.168.1.1".parse().unwrap()));
+        assert!(!usable_ip("169.254.0.5".parse().unwrap()));
+        assert!(!usable_ip("169.254.255.5".parse().unwrap()));
+        assert!(!usable_ip("169.254.169.254".parse().unwrap()));
+        assert!(!usable_ip("fe80::1".parse().unwrap()));
     }
 
     #[test]

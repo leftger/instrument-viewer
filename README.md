@@ -2,8 +2,8 @@
 
 Rust GUI that pulls analog traces from Tektronix **MDO3000** and Rigol
 **DHO900** oscilloscopes over SCPI TCP and plots them. It also controls a
-Siglent **SDG1032X** generator and a Keysight **E36231A** power supply (socket
-port 5025).
+Siglent **SDG1032X** generator and Keysight **E36200** supplies, including the
+single-output **E36231A** and the dual-output **E36233A** (socket port 5025).
 
 Verified against a Tektronix MDO3024 (firmware v1.30) and a Rigol DHO924S
 (firmware 00.01.05). The backend is selected automatically from `*IDN?`.
@@ -68,13 +68,13 @@ LAN socket port is **5025**. `*IDN?` looks like
 `Keysight Technologies,E36231A,<serial>,<firmware>`. Scan will pick it up; Connect
 selects a supply backend so the app does not send Tektronix commands.
 
-Voltage, current limit, and output on/off use `INST:NSEL 1`, `VOLT`, `CURR`, and
-`OUTP` (E3633A-compatible, E36200 programming guide). **Fetch** plots
-`MEAS:VOLT?` as a one-second DC line; measured voltage/current are shown on the
-channel panel. Dual-output E36233A/E36234A and the older triple-output E3631A
-(`APPL P6V|P25V|N25V`, same pattern as the
-[E3631A Python driver](https://github.com/psmd-iberutaru/Keysight-E3631A-Python))
-are identified the same way.
+Voltage, current limit, and output on/off use `VOLT`, `CURR`, and `OUTP`
+(E36200 programming guide). **Fetch** reads one `MEAS:VOLT?` and `MEAS:CURR?`
+sample. The window shows that reading in large digits. A second Fetch in the
+same session plots voltage and current against seconds since the first reading.
+The older
+triple-output E3631A uses `APPL P6V|P25V|N25V` (same pattern as the
+[E3631A Python driver](https://github.com/psmd-iberutaru/Keysight-E3631A-Python)).
 
 ```bash
 ping -c 3 <psu-ip>
@@ -82,9 +82,38 @@ nc -z -v <psu-ip> 5025
 cargo run --release -- --host <psu-ip> --port 5025
 ```
 
+### Keysight E36233A
+
+The E36233A is a **dual-output** autoranging supply. Each output is 30 V / 20 A
+and can deliver **200 W** (so 30 V is available only up to about 6.7 A, and 20 A
+only up to 10 V). LAN socket port is **5025**. `*IDN?` looks like
+`Keysight Technologies,E36233A,<serial>,<firmware>`.
+
+Output 1 and output 2 are selected with `INST:NSEL 1` and `INST:NSEL 2`, then
+the same `VOLT` / `CURR` / `OUTP` / `MEAS` commands as the E36231A. **Fetch**
+reads both outputs even when they are off, and shows the latest voltage and
+current as digits. From the second reading onward, those samples are plotted
+against session time. CSV and JSON exports use that same series, one row per
+reading. The channel panel sets voltage and current limit.
+
+**Pairing** (`OUTP:PAIR`) can leave the outputs independent, stack them in
+**series** (voltages add, up to 60 V), or tie them in **parallel** (currents
+add, up to 40 A). In series or parallel, output 2 follows output 1.
+
+The dual 60 V / 10 A E36234A uses the same commands. Verified against an
+E36233A on firmware 1.1.1-1.0.3-1.01.
+
+```bash
+ping -c 3 <psu-ip>
+nc -z -v <psu-ip> 5025
+cargo run --release -- --host <psu-ip> --port 5025 get
+```
+
 The GUI remembers the host and port after they are entered once. **Scan** browses
-mDNS LXI (`_lxi._tcp`, `_scpi-raw._tcp`) and probes ARP neighbors on ports 4000,
-5555 and 5025 with `*IDN?`. It also lists **USB TMC** instruments (USB class
+mDNS LXI (`_lxi._tcp`, `_scpi-raw._tcp`) and probes ARP neighbors, but only
+IPv4 link-local addresses (`169.254.1.0`–`169.254.254.255`). It does not probe
+the Wi-Fi or any other routed LAN. Those hosts are queried on ports 4000, 5555
+and 5025 with `*IDN?`. It also lists **USB TMC** instruments (USB class
 `0xFE` / subclass `0x03`), probes `*IDN?` over USBTMC, and fills Host with an
 address like `usb:0699:0408:<serial>#0`. Connect opens that USBTMC interface
 (no NI-VISA). A single hit fills Host/Port; several hits appear in the
@@ -183,7 +212,7 @@ With no subcommand, `instrument-viewer` launches the GUI. All CLI commands accep
 `--host` and `--port` options:
 
 ```bash
-# Find scopes via mDNS LXI and ARP neighbors
+# Find link-local instruments via mDNS LXI and ARP neighbors
 cargo run --release -- discover
 
 # Read every supported setting

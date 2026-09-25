@@ -80,6 +80,7 @@ impl Backend for Siglent {
             kind: InstrumentKind::Generator,
             channel_count: 2,
             wave_types: strings(&["SINE", "SQUARE", "RAMP", "PULSE", "NOISE", "ARB", "DC"]),
+            output_pairs: Vec::new(),
         }
     }
 
@@ -218,6 +219,7 @@ pub fn read_config(
             stop_after: "RUNSTOP".into(),
             running,
         },
+        output_pair: String::new(),
     })
 }
 

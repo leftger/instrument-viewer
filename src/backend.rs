@@ -36,6 +36,9 @@ pub struct InstrumentCapabilities {
     pub kind: InstrumentKind,
     pub channel_count: usize,
     pub wave_types: Vec<String>,
+    /// Dual-output supply coupling: `OFF`, `PARALLEL`, or `SERIES`. Empty when
+    /// the instrument has no pairing.
+    pub output_pairs: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +118,19 @@ pub trait Backend: Send {
     }
 
     fn fetch_channel(&self, s: &mut ScpiSession, ch: &str) -> Result<ChannelTrace, WaveformError>;
+
+    /// Fetch all requested channels. Most instruments produce one trace per
+    /// channel; supplies override this to return both voltage and current.
+    fn fetch_channels(
+        &self,
+        s: &mut ScpiSession,
+        channels: &[String],
+    ) -> Result<Vec<ChannelTrace>, WaveformError> {
+        channels
+            .iter()
+            .map(|channel| self.fetch_channel(s, channel))
+            .collect()
+    }
 
     /// Arm a single acquisition and wait for it to complete.
     fn wait_sequence(&self, s: &mut ScpiSession, timeout: Duration) -> Result<(), ScpiError>;

@@ -19,6 +19,14 @@ const CHANNELS: &[&str] = &["CH1", "CH2", "CH3", "CH4"];
 const STATUS_POLL_INTERVAL: f64 = 2.0;
 const STATUS_POLL_BACKOFF: f64 = 4.0;
 
+#[derive(Clone, Debug, PartialEq)]
+struct SupplySample {
+    t_s: f64,
+    channel: String,
+    volts: f64,
+    amps: f64,
+}
+
 pub struct ViewerApp {
     host: String,
     port: String,
@@ -75,6 +83,10 @@ pub struct ViewerApp {
     drawn_points: usize,
     scanning: bool,
     scan_results: Vec<FoundScope>,
+    /// Supply readings taken since connect, in session time.
+    supply_history: Vec<SupplySample>,
+    /// UI clock at the first supply reading of this connection.
+    supply_t0: Option<f64>,
     worker: Worker,
 }
 
@@ -123,8 +135,21 @@ impl ViewerApp {
             drawn_points: 0,
             scanning: false,
             scan_results: Vec::new(),
+            supply_history: Vec::new(),
+            supply_t0: None,
             worker,
         }
+    }
+
+    fn is_supply(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.kind == InstrumentKind::Supply)
+    }
+
+    fn clear_supply_session(&mut self) {
+        self.supply_history.clear();
+        self.supply_t0 = None;
     }
 
     fn persist(&self) {
@@ -138,6 +163,13 @@ impl ViewerApp {
     }
 
     fn set_traces(&mut self, traces: Vec<ChannelTrace>) {
+        let mixed_units = traces
+            .first()
+            .is_some_and(|first| traces.iter().any(|trace| trace.y_unit != first.y_unit));
+        if mixed_units {
+            // A shared y axis cannot meaningfully compare volts with amps.
+            self.stacked = true;
+        }
         self.lanes = stack::lanes(&traces);
         self.traces = traces;
     }
@@ -152,14 +184,24 @@ impl ViewerApp {
     }
 
     fn selected(&self) -> Vec<String> {
+        let supply = self
+            .capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.kind == InstrumentKind::Supply);
+        let count = self
+            .capabilities
+            .as_ref()
+            .map(|caps| caps.channel_count)
+            .unwrap_or(CHANNELS.len());
         self.config
             .as_ref()
             .map(|config| {
                 CHANNELS
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| config.channels[*i].enabled)
-                    .map(|(_, c)| c.to_string())
+                    .take(count)
+                    .filter(|(i, _)| supply || config.channels[*i].enabled)
+                    .map(|(_, c)| (*c).to_string())
                     .collect()
             })
             .unwrap_or_else(|| vec!["CH1".into()])
@@ -267,6 +309,9 @@ impl ViewerApp {
     }
 
     fn show_measurements(&self, ctx: &egui::Context) {
+        if self.is_supply() && supply_capture_count(&self.supply_history) < 2 {
+            return;
+        }
         egui::TopBottomPanel::bottom("meas").show(ctx, |ui| {
             ui.add_space(2.0);
             if self.cursors_on {
@@ -363,6 +408,89 @@ impl ViewerApp {
         });
     }
 
+    fn show_supply_phosphor(&self, ui: &mut egui::Ui) {
+        let latest = latest_supply_samples(&self.supply_history);
+        let bg = egui::Color32::from_rgb(4, 16, 8);
+        let glow = egui::Color32::from_rgb(80, 255, 70);
+        let dim = egui::Color32::from_rgb(24, 92, 36);
+        egui::Frame::new()
+            .fill(bg)
+            .inner_margin(egui::Margin::same(18))
+            .corner_radius(egui::CornerRadius::same(6))
+            .show(ui, |ui| {
+                if latest.is_empty() {
+                    ui.label(
+                        egui::RichText::new("FETCH")
+                            .monospace()
+                            .size(64.0)
+                            .color(dim),
+                    );
+                    ui.label(
+                        egui::RichText::new("to read voltage and current")
+                            .monospace()
+                            .size(18.0)
+                            .color(dim),
+                    );
+                    return;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for sample in &latest {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(&sample.channel)
+                                    .monospace()
+                                    .size(18.0)
+                                    .color(dim),
+                            );
+                            ui.label(
+                                egui::RichText::new(meter_text(sample.volts, "V"))
+                                    .monospace()
+                                    .size(52.0)
+                                    .color(glow),
+                            );
+                            ui.label(
+                                egui::RichText::new(meter_text(sample.amps, "A"))
+                                    .monospace()
+                                    .size(52.0)
+                                    .color(glow),
+                            );
+                            if let Some(prev) = previous_supply_sample(
+                                &self.supply_history,
+                                &sample.channel,
+                                sample.t_s,
+                            ) {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}   {}",
+                                        meter_text(prev.volts, "V"),
+                                        meter_text(prev.amps, "A")
+                                    ))
+                                    .monospace()
+                                    .size(16.0)
+                                    .color(dim),
+                                );
+                            }
+                        });
+                        ui.add_space(28.0);
+                    }
+                });
+                let n = supply_capture_count(&self.supply_history);
+                let caption = if n < 2 {
+                    "one reading · fetch again to plot this session".to_string()
+                } else {
+                    format!("{n} readings · time is seconds since the first")
+                };
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(caption)
+                        .monospace()
+                        .size(14.0)
+                        .color(dim),
+                );
+            });
+        ui.add_space(8.0);
+    }
+
     fn pump(&mut self, now: f64) {
         while let Some(msg) = self.worker.try_recv() {
             match msg {
@@ -384,9 +512,16 @@ impl ViewerApp {
                         self.persist();
                     }
                     self.pending = true;
+                    self.clear_supply_session();
+                    if self.is_supply() {
+                        self.set_traces(Vec::new());
+                    }
                     self.worker.send(Cmd::ReadConfig);
                 }
                 Msg::Disconnected => {
+                    let supply = self.is_supply();
+                    let keep_session_plot =
+                        supply && supply_capture_count(&self.supply_history) >= 2;
                     self.idn = None;
                     self.capabilities = None;
                     self.auto = false;
@@ -398,6 +533,10 @@ impl ViewerApp {
                     self.status_poll_retry_at = 0.0;
                     self.status = "Disconnected.".into();
                     self.captured_at = None;
+                    self.clear_supply_session();
+                    if supply && !keep_session_plot {
+                        self.set_traces(vec![demo_trace("CH1")]);
+                    }
                 }
                 Msg::Traces {
                     traces: t,
@@ -405,9 +544,27 @@ impl ViewerApp {
                 } => {
                     self.pending = false;
                     self.captured_at = Some(captured_at);
-                    let n: usize = t.iter().map(|x| x.points.len()).sum();
-                    self.status = format!("{n} samples across {} channel(s)", t.len());
-                    self.set_traces(t);
+                    if self.is_supply() {
+                        let elapsed = match self.supply_t0 {
+                            Some(t0) => (now - t0).max(0.0),
+                            None => {
+                                self.supply_t0 = Some(now);
+                                0.0
+                            }
+                        };
+                        append_supply_samples(&mut self.supply_history, &t, elapsed);
+                        let n = supply_capture_count(&self.supply_history);
+                        self.status = match n {
+                            0 => "Fetch returned no voltage or current.".into(),
+                            1 => "1 reading. Fetch again to plot this session.".into(),
+                            n => format!("{n} readings this session"),
+                        };
+                        self.set_traces(supply_session_traces(&self.supply_history));
+                    } else {
+                        let n: usize = t.iter().map(|x| x.points.len()).sum();
+                        self.status = format!("{n} samples across {} channel(s)", t.len());
+                        self.set_traces(t);
+                    }
                 }
                 Msg::Config {
                     config,
@@ -754,7 +911,22 @@ impl eframe::App for ViewerApp {
         self.show_measurements(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let supply = self.is_supply();
+            if supply {
+                self.show_supply_phosphor(ui);
+            }
+            if supply && supply_capture_count(&self.supply_history) < 2 {
+                return;
+            }
+            if self.traces.is_empty() {
+                return;
+            }
             let x_unit = self.traces.first().map_or("s", |t| t.x_unit.as_str());
+            let x_axis = if supply {
+                "s since first reading"
+            } else {
+                x_unit
+            };
             let y_unit = self.traces.first().map_or("V", |t| t.y_unit.as_str());
             let mut clicked = None;
             let mut secondary = false;
@@ -779,9 +951,10 @@ impl eframe::App for ViewerApp {
             let mut drawn = 0usize;
             let lanes: &[stack::Lane] = if self.stacked { &self.lanes } else { &[] };
             let names: Vec<String> = self.traces.iter().map(|t| t.channel.clone()).collect();
+            let units: Vec<String> = self.traces.iter().map(|t| t.y_unit.clone()).collect();
             let mut plot = Plot::new("mdo")
                 .legend(Legend::default())
-                .x_axis_label(x_unit)
+                .x_axis_label(x_axis)
                 .allow_zoom(axes)
                 .allow_drag(true)
                 .allow_boxed_zoom(true)
@@ -790,10 +963,10 @@ impl eframe::App for ViewerApp {
             if lanes.is_empty() {
                 plot = plot.y_axis_label(y_unit);
             } else {
-                // Stacked y values are lane positions, not volts, so label the
-                // bands by channel and translate hovered points back.
+                // Stacked y values are lane positions, not engineering units,
+                // so label bands by trace and translate hovered points back.
                 plot = plot
-                    .y_axis_label(format!("{y_unit} (per channel)"))
+                    .y_axis_label("per trace")
                     .y_grid_spacer(|_| {
                         (0..lanes.len())
                             .map(|i| GridMark {
@@ -820,7 +993,7 @@ impl eframe::App for ViewerApp {
                         let Some(i) = lane else {
                             return t;
                         };
-                        let v = measure::format_si(lanes[i].value(point.y), y_unit);
+                        let v = measure::format_si(lanes[i].value(point.y), &units[i]);
                         if name.is_empty() {
                             format!("{t}\n{v}")
                         } else {
@@ -971,7 +1144,27 @@ impl ViewerApp {
                 egui::CollapsingHeader::new(if scope { "Channels" } else { "Outputs" })
                     .default_open(true)
                     .show(ui, |ui| {
-                        egui::ComboBox::from_label("Channel")
+                        if supply && !capabilities.output_pairs.is_empty() {
+                            ui.label(
+                                "Series stacks voltage. Parallel stacks current. Output 2 follows output 1.",
+                            );
+                            combo_string(
+                                ui,
+                                "Pairing",
+                                &mut config.output_pair,
+                                &capabilities.output_pairs,
+                            );
+                            if ui
+                                .add_enabled(!self.pending, egui::Button::new("Apply pairing"))
+                                .clicked()
+                            {
+                                let section = ConfigSection::OutputPair(config.output_pair.clone());
+                                self.config = Some(config.clone());
+                                self.send_config(section);
+                            }
+                        }
+
+                        egui::ComboBox::from_label(if supply { "Output" } else { "Channel" })
                             .selected_text(CHANNELS[self.selected_channel])
                             .show_ui(ui, |ui| {
                                 for (index, name) in channel_names.iter().enumerate() {
@@ -980,6 +1173,7 @@ impl ViewerApp {
                             });
 
                         let index = self.selected_channel;
+                        let output_pair = config.output_pair.clone();
                         let ch = &mut config.channels[index];
                         if generator {
                             ui.checkbox(&mut ch.enabled, "Output enabled");
@@ -1012,9 +1206,20 @@ impl ViewerApp {
                                 ui.small(hint);
                             }
                         } else if supply {
-                            ui.checkbox(&mut ch.enabled, "Output enabled");
-                            value_row(ui, "Voltage (V)", &mut ch.scale, 0.01);
-                            value_row(ui, "Current limit (A)", &mut ch.offset, 0.001);
+                            let slaved = index > 0
+                                && matches!(output_pair.as_str(), "PARALLEL" | "SERIES");
+                            if slaved {
+                                ui.label(format!(
+                                    "Output {} follows output 1 in {} mode.",
+                                    index + 1,
+                                    output_pair.to_ascii_lowercase()
+                                ));
+                            }
+                            ui.add_enabled_ui(!slaved, |ui| {
+                                ui.checkbox(&mut ch.enabled, "Output enabled");
+                                value_row(ui, "Voltage (V)", &mut ch.scale, 0.01);
+                                value_row(ui, "Current limit (A)", &mut ch.offset, 0.001);
+                            });
                             ui.label(format!("Measured: {}", ch.probe_type));
                             if let Some(hint) = &capabilities.channel_hint {
                                 ui.small(hint);
@@ -1097,7 +1302,10 @@ impl ViewerApp {
                         }
 
                         if ui
-                            .add_enabled(!self.pending, egui::Button::new("Apply channel"))
+                            .add_enabled(
+                                !self.pending && !(supply && index > 0 && matches!(output_pair.as_str(), "PARALLEL" | "SERIES")),
+                                egui::Button::new("Apply channel"),
+                            )
                             .clicked()
                         {
                             let section = ConfigSection::Channel(index, ch.clone());
@@ -1224,6 +1432,136 @@ fn axis_factor(k: f32, axes: egui::Vec2b) -> egui::Vec2 {
     egui::Vec2::new(if axes.x { k } else { 1.0 }, if axes.y { k } else { 1.0 })
 }
 
+fn meter_text(value: f64, unit: &str) -> String {
+    if value.is_finite() {
+        measure::format_si(value, unit)
+    } else {
+        format!("— {unit}")
+    }
+}
+
+fn split_supply_quantity(name: &str) -> Option<(&str, &str)> {
+    if let Some(channel) = name.strip_suffix(" Voltage") {
+        Some((channel, "V"))
+    } else {
+        name.strip_suffix(" Current").map(|channel| (channel, "A"))
+    }
+}
+
+fn next_supply_time(history: &[SupplySample], elapsed: f64) -> f64 {
+    match history.last() {
+        Some(sample) if elapsed <= sample.t_s => sample.t_s + 1e-3,
+        _ => elapsed.max(0.0),
+    }
+}
+
+fn append_supply_samples(history: &mut Vec<SupplySample>, traces: &[ChannelTrace], elapsed: f64) {
+    let t_s = next_supply_time(history, elapsed);
+    let mut order = Vec::new();
+    let mut volts = std::collections::BTreeMap::new();
+    let mut amps = std::collections::BTreeMap::new();
+    for trace in traces {
+        let Some((channel, kind)) = split_supply_quantity(&trace.channel) else {
+            continue;
+        };
+        let Some(value) = trace.points.last().map(|point| point[1]) else {
+            continue;
+        };
+        if !volts.contains_key(channel) && !amps.contains_key(channel) {
+            order.push(channel.to_string());
+        }
+        match kind {
+            "V" => {
+                volts.insert(channel.to_string(), value);
+            }
+            "A" => {
+                amps.insert(channel.to_string(), value);
+            }
+            _ => {}
+        }
+    }
+    for channel in order {
+        history.push(SupplySample {
+            t_s,
+            channel: channel.clone(),
+            volts: volts.get(&channel).copied().unwrap_or(f64::NAN),
+            amps: amps.get(&channel).copied().unwrap_or(f64::NAN),
+        });
+    }
+}
+
+fn supply_capture_count(history: &[SupplySample]) -> usize {
+    let mut count = 0usize;
+    let mut last = f64::NAN;
+    for sample in history {
+        if last.is_nan() || (sample.t_s - last).abs() > 1e-9 {
+            count += 1;
+            last = sample.t_s;
+        }
+    }
+    count
+}
+
+fn latest_supply_samples(history: &[SupplySample]) -> Vec<&SupplySample> {
+    let Some(last) = history.last() else {
+        return Vec::new();
+    };
+    history
+        .iter()
+        .filter(|sample| (sample.t_s - last.t_s).abs() <= 1e-9)
+        .collect()
+}
+
+fn previous_supply_sample<'a>(
+    history: &'a [SupplySample],
+    channel: &str,
+    latest_t: f64,
+) -> Option<&'a SupplySample> {
+    history
+        .iter()
+        .rev()
+        .find(|sample| sample.channel == channel && (sample.t_s - latest_t).abs() > 1e-9)
+}
+
+fn supply_session_traces(history: &[SupplySample]) -> Vec<ChannelTrace> {
+    let mut channels = Vec::new();
+    for sample in history {
+        if !channels.iter().any(|name: &String| name == &sample.channel) {
+            channels.push(sample.channel.clone());
+        }
+    }
+    let mut traces = Vec::new();
+    for channel in channels {
+        let volts: Vec<[f64; 2]> = history
+            .iter()
+            .filter(|sample| sample.channel == channel && sample.volts.is_finite())
+            .map(|sample| [sample.t_s, sample.volts])
+            .collect();
+        let amps: Vec<[f64; 2]> = history
+            .iter()
+            .filter(|sample| sample.channel == channel && sample.amps.is_finite())
+            .map(|sample| [sample.t_s, sample.amps])
+            .collect();
+        if !volts.is_empty() {
+            traces.push(ChannelTrace {
+                channel: format!("{channel} Voltage"),
+                x_unit: "s".into(),
+                y_unit: "V".into(),
+                points: volts,
+            });
+        }
+        if !amps.is_empty() {
+            traces.push(ChannelTrace {
+                channel: format!("{channel} Current"),
+                x_unit: "s".into(),
+                y_unit: "A".into(),
+                points: amps,
+            });
+        }
+    }
+    traces
+}
+
 fn write_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), String> {
     let [w, h] = image.size;
     let mut raw = Vec::with_capacity(w * h * 4);
@@ -1280,5 +1618,72 @@ fn format_count(value: u64) -> String {
         10_000 => "10k".into(),
         1_000 => "1k".into(),
         _ => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reading(channel: &str, volts: f64, amps: f64) -> Vec<ChannelTrace> {
+        vec![
+            ChannelTrace {
+                channel: format!("{channel} Voltage"),
+                x_unit: "s".into(),
+                y_unit: "V".into(),
+                points: vec![[0.0, volts]],
+            },
+            ChannelTrace {
+                channel: format!("{channel} Current"),
+                x_unit: "s".into(),
+                y_unit: "A".into(),
+                points: vec![[0.0, amps]],
+            },
+        ]
+    }
+
+    #[test]
+    fn one_supply_fetch_is_a_single_sample() {
+        let mut history = Vec::new();
+        append_supply_samples(&mut history, &reading("CH1", 12.0, 0.25), 0.0);
+        assert_eq!(supply_capture_count(&history), 1);
+        let traces = supply_session_traces(&history);
+        assert_eq!(traces.len(), 2);
+        assert!(traces.iter().all(|trace| trace.points.len() == 1));
+        assert_eq!(traces[0].points, vec![[0.0, 12.0]]);
+        assert_eq!(traces[1].points, vec![[0.0, 0.25]]);
+        assert_eq!(traces[1].y_unit, "A");
+    }
+
+    #[test]
+    fn later_fetches_are_plotted_on_session_time() {
+        let mut history = Vec::new();
+        let mut first = reading("CH1", 1.0, 0.1);
+        first.extend(reading("CH2", 2.0, 0.2));
+        append_supply_samples(&mut history, &first, 0.0);
+        append_supply_samples(&mut history, &reading("CH1", 1.5, 0.3), 2.5);
+        assert_eq!(supply_capture_count(&history), 2);
+        let traces = supply_session_traces(&history);
+        let ch1_v = traces
+            .iter()
+            .find(|trace| trace.channel == "CH1 Voltage")
+            .unwrap();
+        assert_eq!(ch1_v.points, vec![[0.0, 1.0], [2.5, 1.5]]);
+        let ch2_v = traces
+            .iter()
+            .find(|trace| trace.channel == "CH2 Voltage")
+            .unwrap();
+        assert_eq!(ch2_v.points, vec![[0.0, 2.0]]);
+        assert_eq!(latest_supply_samples(&history).len(), 1);
+        assert_eq!(latest_supply_samples(&history)[0].channel, "CH1");
+    }
+
+    #[test]
+    fn identical_clock_readings_stay_distinct() {
+        let mut history = Vec::new();
+        append_supply_samples(&mut history, &reading("CH1", 1.0, 0.1), 0.0);
+        append_supply_samples(&mut history, &reading("CH1", 1.1, 0.2), 0.0);
+        assert_eq!(supply_capture_count(&history), 2);
+        assert!(history[1].t_s > history[0].t_s);
     }
 }

@@ -163,15 +163,9 @@ fn close_session(connection: &mut Option<Connection>) {
 }
 
 fn fetch_traces(c: &mut Connection, channels: &[String]) -> Result<Vec<ChannelTrace>, String> {
-    let mut traces = Vec::new();
-    for ch in channels {
-        traces.push(
-            c.backend
-                .fetch_channel(&mut c.session, ch)
-                .map_err(|e| format!("{ch}: {e}"))?,
-        );
-    }
-    Ok(traces)
+    c.backend
+        .fetch_channels(&mut c.session, channels)
+        .map_err(|e| format!("fetch: {e}"))
 }
 
 fn handle_fetch(

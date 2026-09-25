@@ -235,6 +235,9 @@ fn settings_json(c: &InstrumentConfig) -> String {
         json_str(&c.acquisition.stop_after),
         c.acquisition.running
     );
+    if !c.output_pair.is_empty() {
+        let _ = writeln!(out, "    \"output_pair\": {},", json_str(&c.output_pair));
+    }
     out.push_str("    \"channels\": [\n");
     for (i, ch) in c.channels.iter().enumerate() {
         let att = if ch.probe_gain > 0.0 {
