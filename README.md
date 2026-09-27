@@ -84,8 +84,14 @@ cargo run --release -- --screenshot assets/screenshot.png
 - Live plotting with min/max decimation, autoscale, stacked channel bands, zoom, pan, and box-zoom
 - Automatic backend selection from `*IDN?`; unsupported settings are hidden or read-only
 - Scopes, generators, supplies, multimeters, scan DAQs, and spectrum analyzers behind one GUI
+- **Continuous Live Data Logging**: Stream multimeter, DAQ scanning, power supply V/I/W, and scope measurements continuously to `.csv` and `.jsonl`
+- **Interactive 3D Waterfall / Spectrogram**: 3D perspective projection for spectrum analyzer sweeps and persistence history with false-color palettes (Turbo, Viridis, Iron, Jet, Inferno), mouse rotation, pan, and zoom
+- **Automatic Peak Tracking & Pinned Markers**: Real-time detection of global maximum (`▲ PK+`) and minimum (`▼ PK-`) peaks, plus up to 10 user-pinned persistent markers with coordinate tags
+- **Limit Alarms & Audio/Visual Out-of-Tolerance Alerts**: Configurable high/low thresholds with hysteresis, flashing visual warning banner, and synthesized multi-tone audio chime (via `rodio`)
+- **Keyboard Shortcuts Cheat Sheet Modal (`H` / `?`)**: Fast benchtop hotkeys (<kbd>Space</kbd>, <kbd>F</kbd>, <kbd>S</kbd>, <kbd>C</kbd>, <kbd>L</kbd>, <kbd>W</kbd>, <kbd>P</kbd>, <kbd>A</kbd>, <kbd>R</kbd>)
+- **Timestamped Quick Snapshots & Offline Capture Replay**: Instant capture to disk (<kbd>S</kbd>) and file loading to analyze saved `.json`/`.csv` traces without hardware
 - Discovery over mDNS LXI, ARP neighbors, and USBTMC (no NI-VISA)
-- Full CLI: read/configure channels, timebase, trigger, acquisition, raw SCPI, and CSV/JSON export
+- Full CLI: read/configure channels, timebase, trigger, acquisition, continuous streaming logging (`log`), raw SCPI, and CSV/JSON export
 - Headless `selftest` and raw `probe` example for isolating app bugs from instrument bugs
 - Hardware-free test suite that drives a loopback mock instrument, with coverage on Codecov
 
@@ -95,9 +101,9 @@ cargo run --release -- --screenshot assets/screenshot.png
 
 | Guide | Covers |
 | :--- | :--- |
-| [Using the GUI](docs/gui.md) | Toolbar, plot and view controls, per-class instrument panels, preferences, rendering notes |
+| [Using the GUI](docs/gui.md) | Toolbar, plot, 3D waterfall, data logging, limit alarms, markers, preferences |
 | [Instrument setup](docs/instrument-setup.md) | Per-instrument network setup, ports, discovery and connection |
-| [CLI control](docs/cli.md) | All subcommands, export formats, headless checks |
+| [CLI control](docs/cli.md) | All subcommands, export formats, continuous data logging, headless checks |
 | [Protocol & quirks](docs/protocol.md) | SCPI transfer and scaling details, meter and analyzer reads, vendor quirks |
 | [Tests, coverage & releases](docs/testing.md) | Mock instrument harness, what Codecov measures, cutting a release |
 | [Instrument profiles](profiles/README.md) | Adding instruments as YAML without Rust code |
@@ -107,9 +113,8 @@ cargo run --release -- --screenshot assets/screenshot.png
 ## Not implemented
 
 USB CDC-only gadgets (not USBTMC), digital-channel setup, non-edge trigger
-types, strain/temperature-probe DAQ modes, and marker/limit maths on spectrum
-analyzers. The Siglent SSA/SVA/SHA driver is best-effort until a real SCPI
-manual replaces the IVI-C one.
+types, and strain/temperature-probe DAQ modes. The Siglent SSA/SVA/SHA driver is
+best-effort until a real SCPI manual replaces the IVI-C one.
 
 ---
 

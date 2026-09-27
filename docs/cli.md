@@ -36,6 +36,9 @@ cargo run --release -- export --out capture.csv
 cargo run --release -- export --wide --out capture.csv
 cargo run --release -- export --format json --out capture.json --channels CH1,CH2
 cargo run --release -- export --sequence --out shot.json
+
+# Continuous streaming data logging (CSV and JSON Lines)
+cargo run --release -- log --csv datalog.csv --json datalog.jsonl --interval 1.0 --count 60
 ```
 
 Run `cargo run --release -- <subcommand> --help` for the accepted values. Passive
