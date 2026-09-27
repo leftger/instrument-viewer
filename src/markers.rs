@@ -176,12 +176,7 @@ mod tests {
             channel: "CH1".to_string(),
             x_unit: "s".to_string(),
             y_unit: "V".to_string(),
-            points: vec![
-                [0.0, 1.0],
-                [0.1, 5.5],
-                [0.2, -2.3],
-                [0.3, 3.0],
-            ],
+            points: vec![[0.0, 1.0], [0.1, 5.5], [0.2, -2.3], [0.3, 3.0]],
         };
 
         let peaks = TracePeaks::find(&trace);

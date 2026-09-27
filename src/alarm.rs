@@ -1,5 +1,5 @@
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 use crate::audio::AudioAlertController;
 
@@ -69,25 +69,13 @@ impl Default for AlarmConfig {
 }
 
 /// Runtime state of the limit alarm system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AlarmState {
     pub triggered: bool,
     pub triggered_high: bool,
     pub triggered_low: bool,
     pub message: String,
     pub last_sound_at: Option<Instant>,
-}
-
-impl Default for AlarmState {
-    fn default() -> Self {
-        Self {
-            triggered: false,
-            triggered_high: false,
-            triggered_low: false,
-            message: String::new(),
-            last_sound_at: None,
-        }
-    }
 }
 
 pub struct AlarmManager {
@@ -125,7 +113,9 @@ impl AlarmManager {
         if self.config.high_enabled {
             if !high_viol && value >= self.config.high_threshold {
                 high_viol = true;
-            } else if high_viol && value < (self.config.high_threshold - self.config.hysteresis.max(0.0)) {
+            } else if high_viol
+                && value < (self.config.high_threshold - self.config.hysteresis.max(0.0))
+            {
                 high_viol = false;
             }
         } else {
@@ -136,7 +126,9 @@ impl AlarmManager {
         if self.config.low_enabled {
             if !low_viol && value <= self.config.low_threshold {
                 low_viol = true;
-            } else if low_viol && value > (self.config.low_threshold + self.config.hysteresis.max(0.0)) {
+            } else if low_viol
+                && value > (self.config.low_threshold + self.config.hysteresis.max(0.0))
+            {
                 low_viol = false;
             }
         } else {

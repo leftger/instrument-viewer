@@ -51,14 +51,14 @@ impl Palette {
 // Generate smooth Viridis, Turbo, Jet, Iron, and Inferno palettes
 fn sample_gradient(stops: &[(f32, [u8; 3])]) -> [[u8; 3]; 256] {
     let mut table = [[0u8; 3]; 256];
-    for i in 0..256 {
+    for (i, entry) in table.iter_mut().enumerate() {
         let t = i as f32 / 255.0;
         let mut idx = 0;
         while idx < stops.len() - 1 && stops[idx + 1].0 <= t {
             idx += 1;
         }
         if idx >= stops.len() - 1 {
-            table[i] = stops[stops.len() - 1].1;
+            *entry = stops[stops.len() - 1].1;
         } else {
             let (t0, c0) = stops[idx];
             let (t1, c1) = stops[idx + 1];
@@ -66,7 +66,7 @@ fn sample_gradient(stops: &[(f32, [u8; 3])]) -> [[u8; 3]; 256] {
             let r = (c0[0] as f32 + (c1[0] as f32 - c0[0] as f32) * factor).round() as u8;
             let g = (c0[1] as f32 + (c1[1] as f32 - c0[1] as f32) * factor).round() as u8;
             let b = (c0[2] as f32 + (c1[2] as f32 - c0[2] as f32) * factor).round() as u8;
-            table[i] = [r, g, b];
+            *entry = [r, g, b];
         }
     }
     table

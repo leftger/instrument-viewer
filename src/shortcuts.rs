@@ -110,7 +110,11 @@ pub fn show_shortcuts_window(ctx: &egui::Context, open: &mut bool) {
             ui.add_space(4.0);
 
             for cat in SHORTCUT_CATEGORIES {
-                ui.heading(RichText::new(cat.name).size(14.0).color(Color32::from_rgb(100, 180, 255)));
+                ui.heading(
+                    RichText::new(cat.name)
+                        .size(14.0)
+                        .color(Color32::from_rgb(100, 180, 255)),
+                );
                 ui.add_space(2.0);
 
                 egui::Grid::new(cat.name)
@@ -154,5 +158,21 @@ mod tests {
                 assert!(!entry.description.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn test_show_shortcuts_window_headless() {
+        let ctx = egui::Context::default();
+        let mut open = true;
+        let _ = ctx.run(Default::default(), |ctx| {
+            show_shortcuts_window(ctx, &mut open);
+        });
+        assert!(open);
+
+        let mut closed = false;
+        let _ = ctx.run(Default::default(), |ctx| {
+            show_shortcuts_window(ctx, &mut closed);
+        });
+        assert!(!closed);
     }
 }

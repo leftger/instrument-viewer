@@ -575,7 +575,8 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
                         break;
                     }
                 }
-                let captured_at = crate::timestamp::CaptureTime::for_session(&mut session, backend.kind());
+                let captured_at =
+                    crate::timestamp::CaptureTime::for_session(&mut session, backend.kind());
                 let traces = backend.fetch_channels(&mut session, &channels)?;
                 for trace in &traces {
                     let val = trace.points.last().map(|p| p[1]).unwrap_or(0.0);

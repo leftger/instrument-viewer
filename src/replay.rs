@@ -76,7 +76,10 @@ fn load_json(content: &str, path: &Path) -> Result<LoadedCapture, String> {
         CaptureTime { iso, source }
     });
 
-    let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("capture");
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("capture");
 
     Ok(LoadedCapture {
         traces,
@@ -101,7 +104,7 @@ fn load_csv(content: &str, path: &Path) -> Result<LoadedCapture, String> {
             } else if let Some(rest) = comment.strip_prefix("captured_at=") {
                 let parts: Vec<&str> = rest.split_whitespace().collect();
                 if let Some(iso) = parts.first() {
-                    let source = if parts.iter().any(|&p| p == "source=instrument") {
+                    let source = if parts.contains(&"source=instrument") {
                         CaptureTimeSource::Instrument
                     } else {
                         CaptureTimeSource::Host
@@ -123,9 +126,14 @@ fn load_csv(content: &str, path: &Path) -> Result<LoadedCapture, String> {
 
     let mut traces = Vec::new();
 
-    if header_parts.len() >= 3 && header_parts[0] == "channel" && header_parts[1] == "t" && header_parts[2] == "v" {
+    if header_parts.len() >= 3
+        && header_parts[0] == "channel"
+        && header_parts[1] == "t"
+        && header_parts[2] == "v"
+    {
         // Long format
-        let mut map: std::collections::BTreeMap<String, Vec<[f64; 2]>> = std::collections::BTreeMap::new();
+        let mut map: std::collections::BTreeMap<String, Vec<[f64; 2]>> =
+            std::collections::BTreeMap::new();
         for line in lines {
             let row: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
             if row.len() >= 3 {
@@ -174,7 +182,10 @@ fn load_csv(content: &str, path: &Path) -> Result<LoadedCapture, String> {
         return Err("Unrecognized CSV format".to_string());
     }
 
-    let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("capture");
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("capture");
 
     Ok(LoadedCapture {
         traces,
