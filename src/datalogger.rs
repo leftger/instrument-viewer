@@ -41,7 +41,10 @@ impl LogRecord {
             self.secondary_value
                 .map(|v| format!("{:.6}", v))
                 .unwrap_or_default(),
-            self.secondary_unit.as_deref().unwrap_or_default().replace('"', "\"\""),
+            self.secondary_unit
+                .as_deref()
+                .unwrap_or_default()
+                .replace('"', "\"\""),
         )
     }
 }
@@ -107,10 +110,7 @@ impl DataLogger {
                 fs::create_dir_all(parent)?;
             }
             let file_exists = path.exists();
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)?;
+            let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
             if !file_exists || fs::metadata(&path)?.len() == 0 {
                 writeln!(file, "{}", LogRecord::csv_header())?;
                 file.flush()?;
@@ -122,10 +122,7 @@ impl DataLogger {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)?;
+            let file = OpenOptions::new().create(true).append(true).open(&path)?;
             self.json_file = Some((path, file));
         }
 
@@ -157,8 +154,7 @@ impl DataLogger {
         }
 
         if let Some((_, file)) = &mut self.json_file {
-            let json_line = serde_json::to_string(record)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let json_line = serde_json::to_string(record).map_err(io::Error::other)?;
             writeln!(file, "{}", json_line)?;
             file.flush()?;
         }

@@ -190,7 +190,8 @@ impl WaterfallView {
         }
 
         // Draw HUD overlay
-        let hud_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(260.0, 52.0));
+        let hud_rect =
+            Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(260.0, 52.0));
         painter.rect_filled(hud_rect, 4.0, Color32::from_black_alpha(160));
         painter.text(
             hud_rect.min + Vec2::new(8.0, 8.0),
@@ -237,5 +238,38 @@ mod tests {
 
         wf.clear();
         assert!(wf.history.is_empty());
+    }
+
+    #[test]
+    fn waterfall_rendering_and_reset() {
+        let mut wf = WaterfallView::new();
+        let ctx = egui::Context::default();
+
+        // Render empty waterfall
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                wf.show(ui);
+            });
+        });
+
+        // Push traces and render populated waterfall
+        let trace = ChannelTrace {
+            channel: "CH1".to_string(),
+            x_unit: "Hz".to_string(),
+            y_unit: "dBm".to_string(),
+            points: vec![[1e6, -50.0], [2e6, -20.0], [3e6, -45.0]],
+        };
+        wf.push_trace(&trace);
+        wf.push_trace(&trace);
+
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                wf.show(ui);
+            });
+        });
+
+        assert_eq!(wf.history.len(), 2);
+        wf.reset_view();
+        assert!((wf.zoom - 380.0).abs() < 1e-3);
     }
 }

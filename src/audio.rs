@@ -54,7 +54,7 @@ impl AudioAlertController {
 
                             let mut samples = make_beep(880.0, 0.12);
                             let gap = (sample_rate as f32 * 0.06) as usize;
-                            samples.extend(std::iter::repeat(0.0).take(gap));
+                            samples.extend(std::iter::repeat_n(0.0, gap));
                             samples.extend(make_beep(1174.66, 0.15));
 
                             if let (Some(channels), Some(rate)) = (

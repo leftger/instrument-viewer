@@ -563,10 +563,8 @@ impl ViewerApp {
                             self.markers.add_marker(ch, t, v, "s", y_unit);
                         }
                     }
-                    if !self.markers.is_empty() {
-                        if ui.button("Clear Markers").clicked() {
-                            self.markers.clear();
-                        }
+                    if !self.markers.is_empty() && ui.button("Clear Markers").clicked() {
+                        self.markers.clear();
                     }
                 });
             }
@@ -1141,12 +1139,15 @@ impl eframe::App for ViewerApp {
                                     .strong()
                                     .size(13.0),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let mut audio_on = self.alarm.config.audio_enabled;
-                                if ui.checkbox(&mut audio_on, "Audio alert").changed() {
-                                    self.alarm.config.audio_enabled = audio_on;
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let mut audio_on = self.alarm.config.audio_enabled;
+                                    if ui.checkbox(&mut audio_on, "Audio alert").changed() {
+                                        self.alarm.config.audio_enabled = audio_on;
+                                    }
+                                },
+                            );
                         });
                     });
                 ui.add_space(2.0);
@@ -1320,7 +1321,10 @@ impl eframe::App for ViewerApp {
                         let dir = PathBuf::from("captures");
                         let csv_path = dir.join(format!("datalog-{stamp}.csv"));
                         let json_path = dir.join(format!("datalog-{stamp}.jsonl"));
-                        if let Err(e) = self.datalogger.start(Some(csv_path.clone()), Some(json_path.clone())) {
+                        if let Err(e) = self
+                            .datalogger
+                            .start(Some(csv_path.clone()), Some(json_path.clone()))
+                        {
                             self.status = format!("Failed to start logging: {e}");
                         } else {
                             self.status = format!("Logging to {}", csv_path.display());
@@ -1330,13 +1334,19 @@ impl eframe::App for ViewerApp {
                     let elapsed = self.datalogger.elapsed_secs();
                     let mins = (elapsed / 60.0) as u32;
                     let secs = (elapsed % 60.0) as u32;
-                    let label = format!("⏹ REC ({mins:02}:{secs:02}, {} pts)", self.datalogger.sample_count());
+                    let label = format!(
+                        "⏹ REC ({mins:02}:{secs:02}, {} pts)",
+                        self.datalogger.sample_count()
+                    );
                     let color = if (now * 2.0).fract() > 0.5 {
                         egui::Color32::from_rgb(255, 60, 60)
                     } else {
                         egui::Color32::from_rgb(180, 0, 0)
                     };
-                    if ui.button(egui::RichText::new(label).color(color).strong()).clicked() {
+                    if ui
+                        .button(egui::RichText::new(label).color(color).strong())
+                        .clicked()
+                    {
                         self.datalogger.stop();
                         self.status = "Logging stopped.".into();
                     }
@@ -1384,7 +1394,10 @@ impl eframe::App for ViewerApp {
                     if ui.button("Reset View").clicked() {
                         self.waterfall.reset_view();
                     }
-                    if ui.button(format!("Palette: {}", self.waterfall.palette.name())).clicked() {
+                    if ui
+                        .button(format!("Palette: {}", self.waterfall.palette.name()))
+                        .clicked()
+                    {
                         self.waterfall.palette = self.waterfall.palette.next();
                     }
                     if ui.button("Clear History").clicked() {
@@ -1403,56 +1416,58 @@ impl eframe::App for ViewerApp {
                     {
                         self.auto_fit = !self.auto_fit;
                     }
-                if ui.button("Fit now").clicked() {
-                    self.fit_request = true;
-                }
-                if ui
-                    .selectable_label(self.stacked, "Stack")
-                    .on_hover_text(
-                        "One band per channel, each scaled to its own min/max, \
+                    if ui.button("Fit now").clicked() {
+                        self.fit_request = true;
+                    }
+                    if ui
+                        .selectable_label(self.stacked, "Stack")
+                        .on_hover_text(
+                            "One band per channel, each scaled to its own min/max, \
                          so a small signal is as tall as a large one",
-                    )
-                    .clicked()
-                {
-                    self.stacked = !self.stacked;
-                    // The y range changes completely; the old view would be off-screen.
-                    self.fit_request = true;
-                }
-                ui.separator();
+                        )
+                        .clicked()
+                    {
+                        self.stacked = !self.stacked;
+                        // The y range changes completely; the old view would be off-screen.
+                        self.fit_request = true;
+                    }
+                    ui.separator();
 
-                ui.label("Zoom axes");
-                ui.checkbox(&mut self.zoom_x, "X");
-                ui.checkbox(&mut self.zoom_y, "Y");
-                ui.separator();
+                    ui.label("Zoom axes");
+                    ui.checkbox(&mut self.zoom_x, "X");
+                    ui.checkbox(&mut self.zoom_y, "Y");
+                    ui.separator();
 
-                if ui.button("−").on_hover_text("Zoom out").clicked() {
-                    self.queue_zoom(1.0 / 1.4);
-                }
-                if ui.button("+").on_hover_text("Zoom in").clicked() {
-                    self.queue_zoom(1.4);
-                }
-                ui.separator();
+                    if ui.button("−").on_hover_text("Zoom out").clicked() {
+                        self.queue_zoom(1.0 / 1.4);
+                    }
+                    if ui.button("+").on_hover_text("Zoom in").clicked() {
+                        self.queue_zoom(1.4);
+                    }
+                    ui.separator();
 
-                ui.label("Y only");
-                if ui.button("−Y").clicked() {
-                    self.zoom_request = Some(egui::Vec2::new(1.0, 1.0 / 1.4));
-                    self.auto_fit = false;
-                }
-                if ui.button("+Y").clicked() {
-                    self.zoom_request = Some(egui::Vec2::new(1.0, 1.4));
-                    self.auto_fit = false;
-                }
-                ui.separator();
+                    ui.label("Y only");
+                    if ui.button("−Y").clicked() {
+                        self.zoom_request = Some(egui::Vec2::new(1.0, 1.0 / 1.4));
+                        self.auto_fit = false;
+                    }
+                    if ui.button("+Y").clicked() {
+                        self.zoom_request = Some(egui::Vec2::new(1.0, 1.4));
+                        self.auto_fit = false;
+                    }
+                    ui.separator();
 
-                if ui
-                    .checkbox(&mut self.scroll_zooms, "Scroll zooms")
-                    .on_hover_text("Off: two-finger scroll pans. On: it zooms the enabled axes.")
-                    .changed()
-                {
-                    self.persist();
-                }
-                ui.label("Drag pans · right-drag box-zooms");
-            });
+                    if ui
+                        .checkbox(&mut self.scroll_zooms, "Scroll zooms")
+                        .on_hover_text(
+                            "Off: two-finger scroll pans. On: it zooms the enabled axes.",
+                        )
+                        .changed()
+                    {
+                        self.persist();
+                    }
+                    ui.label("Drag pans · right-drag box-zooms");
+                });
             }
 
             ui.label(&self.status);
@@ -1649,22 +1664,37 @@ impl eframe::App for ViewerApp {
                         .selected_text(self.alarm.config.source.display_name())
                         .show_ui(ui, |ui| {
                             for src in crate::alarm::AlarmSource::ALL {
-                                ui.selectable_value(&mut self.alarm.config.source, *src, src.display_name());
+                                ui.selectable_value(
+                                    &mut self.alarm.config.source,
+                                    *src,
+                                    src.display_name(),
+                                );
                             }
                         });
                     ui.checkbox(&mut self.alarm.config.high_enabled, "High Limit");
                     if self.alarm.config.high_enabled {
-                        ui.add(egui::DragValue::new(&mut self.alarm.config.high_threshold).speed(0.1));
+                        ui.add(
+                            egui::DragValue::new(&mut self.alarm.config.high_threshold).speed(0.1),
+                        );
                     }
                     ui.checkbox(&mut self.alarm.config.low_enabled, "Low Limit");
                     if self.alarm.config.low_enabled {
-                        ui.add(egui::DragValue::new(&mut self.alarm.config.low_threshold).speed(0.1));
+                        ui.add(
+                            egui::DragValue::new(&mut self.alarm.config.low_threshold).speed(0.1),
+                        );
                     }
                     ui.horizontal(|ui| {
                         ui.label("Hysteresis");
-                        ui.add(egui::DragValue::new(&mut self.alarm.config.hysteresis).speed(0.01).range(0.0..=10.0));
+                        ui.add(
+                            egui::DragValue::new(&mut self.alarm.config.hysteresis)
+                                .speed(0.01)
+                                .range(0.0..=10.0),
+                        );
                     });
-                    ui.checkbox(&mut self.alarm.config.audio_enabled, "Synthesized Audio Beep (Rodio)");
+                    ui.checkbox(
+                        &mut self.alarm.config.audio_enabled,
+                        "Synthesized Audio Beep (Rodio)",
+                    );
                 });
         }
 

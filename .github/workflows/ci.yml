@@ -35,6 +35,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
       - run: cargo clippy --all-targets -- -W clippy::all
 
   test:
@@ -44,6 +48,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
       - run: cargo test --all-targets
 
   # Coverage runs the same tests under source-based instrumentation and uploads
@@ -60,6 +68,10 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
       - name: Measure code coverage
         run: |
           # One instrumented run; `report` reuses its profile data, so the
