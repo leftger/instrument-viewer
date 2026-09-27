@@ -73,6 +73,21 @@ pub enum Command {
         #[arg(long)]
         sequence: bool,
     },
+    /// Continuously log instrument samples to CSV and/or JSON Lines.
+    Log {
+        /// Destination CSV file path.
+        #[arg(long)]
+        csv: Option<std::path::PathBuf>,
+        /// Destination JSON Lines file path.
+        #[arg(long)]
+        json: Option<std::path::PathBuf>,
+        /// Seconds between log samples (default 1.0).
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+        /// Maximum number of samples to log (runs indefinitely if omitted).
+        #[arg(long)]
+        count: Option<u64>,
+    },
     /// Run the scope's built-in autoset.
     Autoset,
     /// Drive the GUI's worker thread headlessly to reproduce connect problems.
@@ -528,6 +543,67 @@ pub fn run(cli: &Cli, command: &Command) -> Result<(), Box<dyn Error>> {
         Command::Autoset => {
             backend.autoset(&mut session)?;
             println!("autoset started");
+        }
+        Command::Log {
+            csv,
+            json,
+            interval,
+            count,
+        } => {
+            let mut logger = crate::datalogger::DataLogger::new();
+            logger.start(csv.clone(), json.clone())?;
+            let config = read_config(&mut session, backend)?;
+            let mut channels: Vec<String> = config
+                .channels
+                .iter()
+                .enumerate()
+                .filter(|(_, ch)| ch.enabled)
+                .map(|(i, _)| format!("CH{}", i + 1))
+                .collect();
+            if channels.is_empty() {
+                channels = vec!["CH1".into()];
+            }
+
+            println!(
+                "Started continuous logging (interval: {:.2}s, channels: {:?})...",
+                interval, channels
+            );
+            let mut sample_idx = 0u64;
+            loop {
+                if let Some(max_count) = count {
+                    if sample_idx >= *max_count {
+                        break;
+                    }
+                }
+                let captured_at = crate::timestamp::CaptureTime::for_session(&mut session, backend.kind());
+                let traces = backend.fetch_channels(&mut session, &channels)?;
+                for trace in &traces {
+                    let val = trace.points.last().map(|p| p[1]).unwrap_or(0.0);
+                    let rec = crate::datalogger::LogRecord {
+                        timestamp: captured_at.iso.clone(),
+                        elapsed_secs: logger.elapsed_secs(),
+                        sample_idx: sample_idx + 1,
+                        instrument: idn.clone(),
+                        channel: trace.channel.clone(),
+                        parameter: "Trace".to_string(),
+                        value: val,
+                        unit: trace.y_unit.clone(),
+                        secondary_value: None,
+                        secondary_unit: None,
+                    };
+                    logger.log(&rec)?;
+                }
+                sample_idx += 1;
+                println!(
+                    "Logged sample {} ({} trace(s), {:.2}s elapsed)",
+                    sample_idx,
+                    traces.len(),
+                    logger.elapsed_secs()
+                );
+                std::thread::sleep(Duration::from_secs_f64(*interval));
+            }
+            logger.stop();
+            println!("Logging finished. Total samples: {sample_idx}");
         }
         Command::Selftest { .. } => unreachable!("selftest is dispatched by main"),
     }

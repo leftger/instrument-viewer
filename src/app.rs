@@ -91,6 +91,12 @@ pub struct ViewerApp {
     supply_history: Vec<SupplySample>,
     /// UI clock at the first supply reading of this connection.
     supply_t0: Option<f64>,
+    alarm: crate::alarm::AlarmManager,
+    show_alarm_panel: bool,
+    datalogger: crate::datalogger::DataLogger,
+    markers: crate::markers::MarkerManager,
+    waterfall: crate::waterfall::WaterfallView,
+    show_shortcuts_modal: bool,
     worker: Worker,
 }
 
@@ -154,6 +160,12 @@ impl ViewerApp {
             scan_results: Vec::new(),
             supply_history: Vec::new(),
             supply_t0: None,
+            alarm: crate::alarm::AlarmManager::new(),
+            show_alarm_panel: false,
+            datalogger: crate::datalogger::DataLogger::new(),
+            markers: crate::markers::MarkerManager::new(),
+            waterfall: crate::waterfall::WaterfallView::new(),
+            show_shortcuts_modal: false,
             worker,
         }
     }
@@ -194,7 +206,116 @@ impl ViewerApp {
             self.stacked = true;
         }
         self.lanes = stack::lanes(&traces);
+        if let Some(first) = traces.first() {
+            self.waterfall.push_trace(first);
+        }
         self.traces = traces;
+        self.process_telemetry_and_alarms();
+    }
+
+    fn process_telemetry_and_alarms(&mut self) {
+        let now_iso = self
+            .captured_at
+            .as_ref()
+            .map(|c| c.iso.clone())
+            .unwrap_or_else(|| crate::timestamp::CaptureTime::host_now().iso);
+        let idn_str = self.idn.as_deref().unwrap_or("Unknown").to_string();
+
+        if self.is_multimeter() {
+            for trace in &self.traces {
+                if let Some(val) = trace.points.last().map(|p| p[1]) {
+                    if self.alarm.config.source == crate::alarm::AlarmSource::MeterReading {
+                        self.alarm.evaluate(val);
+                    }
+                    if self.datalogger.is_logging() {
+                        let rec = crate::datalogger::LogRecord {
+                            timestamp: now_iso.clone(),
+                            elapsed_secs: self.datalogger.elapsed_secs(),
+                            sample_idx: self.datalogger.sample_count() + 1,
+                            instrument: idn_str.clone(),
+                            channel: trace.channel.clone(),
+                            parameter: "Reading".to_string(),
+                            value: val,
+                            unit: trace.y_unit.clone(),
+                            secondary_value: None,
+                            secondary_unit: None,
+                        };
+                        let _ = self.datalogger.log(&rec);
+                    }
+                }
+            }
+        } else if self.is_supply() {
+            if let Some(sample) = self.supply_history.last() {
+                match self.alarm.config.source {
+                    crate::alarm::AlarmSource::SupplyVolts if sample.volts.is_finite() => {
+                        self.alarm.evaluate(sample.volts);
+                    }
+                    crate::alarm::AlarmSource::SupplyAmps if sample.amps.is_finite() => {
+                        self.alarm.evaluate(sample.amps);
+                    }
+                    _ => {}
+                }
+                if self.datalogger.is_logging() {
+                    let watts = if sample.volts.is_finite() && sample.amps.is_finite() {
+                        Some(sample.volts * sample.amps)
+                    } else {
+                        None
+                    };
+                    let rec = crate::datalogger::LogRecord {
+                        timestamp: now_iso.clone(),
+                        elapsed_secs: self.datalogger.elapsed_secs(),
+                        sample_idx: self.datalogger.sample_count() + 1,
+                        instrument: idn_str.clone(),
+                        channel: sample.channel.clone(),
+                        parameter: "Supply".to_string(),
+                        value: sample.volts,
+                        unit: "V".to_string(),
+                        secondary_value: if sample.amps.is_finite() {
+                            Some(sample.amps)
+                        } else {
+                            watts
+                        },
+                        secondary_unit: if sample.amps.is_finite() {
+                            Some("A".to_string())
+                        } else {
+                            Some("W".to_string())
+                        },
+                    };
+                    let _ = self.datalogger.log(&rec);
+                }
+            }
+        } else {
+            for trace in &self.traces {
+                if let Some(m) = measure::measure(trace) {
+                    match self.alarm.config.source {
+                        crate::alarm::AlarmSource::ScopePkPk => self.alarm.evaluate(m.pk_pk),
+                        crate::alarm::AlarmSource::ScopeMax => self.alarm.evaluate(m.max),
+                        crate::alarm::AlarmSource::ScopeMin => self.alarm.evaluate(m.min),
+                        crate::alarm::AlarmSource::ScopeFreq => {
+                            if let Some(f) = m.frequency_hz {
+                                self.alarm.evaluate(f);
+                            }
+                        }
+                        _ => {}
+                    }
+                    if self.datalogger.is_logging() {
+                        let rec = crate::datalogger::LogRecord {
+                            timestamp: now_iso.clone(),
+                            elapsed_secs: self.datalogger.elapsed_secs(),
+                            sample_idx: self.datalogger.sample_count() + 1,
+                            instrument: idn_str.clone(),
+                            channel: trace.channel.clone(),
+                            parameter: "PkPk".to_string(),
+                            value: m.pk_pk,
+                            unit: trace.y_unit.clone(),
+                            secondary_value: m.frequency_hz,
+                            secondary_unit: Some("Hz".to_string()),
+                        };
+                        let _ = self.datalogger.log(&rec);
+                    }
+                }
+            }
+        }
     }
 
     fn addr(&self) -> String {
@@ -291,6 +412,43 @@ impl ViewerApp {
         }
     }
 
+    fn quick_snapshot(&mut self, ctx: &egui::Context) {
+        let stamp = crate::timestamp::CaptureTime::host_now().filename_stamp();
+        let dir = PathBuf::from("captures");
+        let _ = std::fs::create_dir_all(&dir);
+        let png_path = dir.join(format!("instrument-capture-{stamp}.png"));
+        let csv_path = dir.join(format!("instrument-capture-{stamp}.csv"));
+        let opts = self.export_opts(crate::export::ExportFormat::Csv);
+        let _ = crate::export::write_file(&csv_path, &opts);
+        self.pending_png = Some(png_path.clone());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        self.status = format!("Quick snapshot saved: {}", png_path.display());
+    }
+
+    fn open_capture(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Capture", &["json", "csv"])
+            .pick_file()
+        else {
+            return;
+        };
+        match crate::replay::load_capture(&path) {
+            Ok(loaded) => {
+                self.captured_at = loaded.captured_at;
+                if let Some(idn) = loaded.idn {
+                    self.status = format!("Loaded {} ({})", path.display(), idn);
+                } else {
+                    self.status = format!("Loaded {}", path.display());
+                }
+                self.set_traces(loaded.traces);
+                self.fit_request = true;
+            }
+            Err(e) => {
+                self.status = format!("Failed to load capture: {e}");
+            }
+        }
+    }
+
     fn queue_zoom(&mut self, k: f32) {
         self.zoom_request = Some(axis_factor(k, egui::Vec2b::new(self.zoom_x, self.zoom_y)));
         self.auto_fit = false;
@@ -334,7 +492,7 @@ impl ViewerApp {
         }
     }
 
-    fn show_measurements(&self, ctx: &egui::Context) {
+    fn show_measurements(&mut self, ctx: &egui::Context) {
         if self.is_supply() && supply_capture_count(&self.supply_history) < 2 {
             return;
         }
@@ -381,10 +539,90 @@ impl ViewerApp {
                             }
                         }
                     }
+                    if let Some(t) = a {
+                        if ui
+                            .button("+ Pin Marker")
+                            .on_hover_text("Pin persistent measurement marker at Cursor A")
+                            .clicked()
+                        {
+                            let v = self
+                                .traces
+                                .first()
+                                .and_then(|tr| measure::value_at(tr, t))
+                                .unwrap_or(0.0);
+                            let ch = self
+                                .traces
+                                .first()
+                                .map(|tr| tr.channel.as_str())
+                                .unwrap_or("CH1");
+                            let y_unit = self
+                                .traces
+                                .first()
+                                .map(|tr| tr.y_unit.as_str())
+                                .unwrap_or("V");
+                            self.markers.add_marker(ch, t, v, "s", y_unit);
+                        }
+                    }
+                    if !self.markers.is_empty() {
+                        if ui.button("Clear Markers").clicked() {
+                            self.markers.clear();
+                        }
+                    }
                 });
             }
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    if self.markers.peak_tracking_enabled {
+                        for trace in &self.traces {
+                            let peaks = crate::markers::TracePeaks::find(trace);
+                            if let (Some(max), Some(min)) = (peaks.max, peaks.min) {
+                                ui.group(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} Peaks", trace.channel))
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(255, 215, 0)),
+                                    );
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(255, 100, 100),
+                                        format!(
+                                            "▲ PK+ {} @ {}",
+                                            measure::format_si(max.y, &max.y_unit),
+                                            measure::format_si(max.x, &max.x_unit)
+                                        ),
+                                    );
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(100, 180, 255),
+                                        format!(
+                                            "▼ PK- {} @ {}",
+                                            measure::format_si(min.y, &min.y_unit),
+                                            measure::format_si(min.x, &min.x_unit)
+                                        ),
+                                    );
+                                    ui.label(format!(
+                                        "ΔPK {}",
+                                        measure::format_si(max.y - min.y, &max.y_unit)
+                                    ));
+                                });
+                            }
+                        }
+                    }
+                    if !self.markers.is_empty() {
+                        ui.group(|ui| {
+                            ui.label(
+                                egui::RichText::new("Markers")
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(100, 200, 255)),
+                            );
+                            for m in self.markers.markers() {
+                                ui.label(format!(
+                                    "M{}: {} @ {}",
+                                    m.id,
+                                    measure::format_si(m.y, &m.y_unit),
+                                    measure::format_si(m.x, &m.x_unit)
+                                ));
+                            }
+                        });
+                    }
                     for trace in &self.traces {
                         let Some(m) = measure::measure(trace) else {
                             continue;
@@ -734,6 +972,82 @@ impl eframe::App for ViewerApp {
         self.pump(now);
         self.collect_screenshot(ctx);
 
+        let (
+            space_pressed,
+            key_f,
+            key_s,
+            key_c,
+            key_l,
+            key_w,
+            key_p,
+            key_a,
+            key_r,
+            key_h,
+            key_esc,
+            key_d,
+        ) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::Space),
+                i.key_pressed(egui::Key::F),
+                i.key_pressed(egui::Key::S),
+                i.key_pressed(egui::Key::C) || i.key_pressed(egui::Key::K),
+                i.key_pressed(egui::Key::L),
+                i.key_pressed(egui::Key::W) || i.key_pressed(egui::Key::Num3),
+                i.key_pressed(egui::Key::P),
+                i.key_pressed(egui::Key::A),
+                i.key_pressed(egui::Key::R),
+                i.key_pressed(egui::Key::H) || i.key_pressed(egui::Key::Questionmark),
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::D),
+            )
+        });
+
+        if key_h {
+            self.show_shortcuts_modal = !self.show_shortcuts_modal;
+        }
+        if key_esc {
+            self.show_shortcuts_modal = false;
+            self.show_alarm_panel = false;
+            self.markers.clear();
+        }
+        if key_f {
+            self.fit_request = true;
+        }
+        if key_s {
+            self.quick_snapshot(ctx);
+        }
+        if key_c {
+            self.cursors_on = !self.cursors_on;
+        }
+        if key_l {
+            self.stacked = !self.stacked;
+            self.fit_request = true;
+        }
+        if key_w {
+            self.waterfall.is_active = !self.waterfall.is_active;
+        }
+        if key_p {
+            self.markers.peak_tracking_enabled = !self.markers.peak_tracking_enabled;
+        }
+        if key_a {
+            self.auto = !self.auto;
+        }
+        if key_r && self.idn.is_some() && !self.pending {
+            self.worker.send(Cmd::ReadConfig);
+        }
+        if space_pressed {
+            if self.auto {
+                self.auto = false;
+            } else if self.idn.is_some() && !self.pending {
+                self.request_fetch();
+            }
+        }
+        if key_d {
+            if let Some(a) = self.cursor_a {
+                self.markers.remove_nearest(a, 0.0);
+            }
+        }
+
         // CLI screenshot mode: give the first frames a chance to paint, then
         // capture the window, write the PNG (collect_screenshot), and close.
         if let Some(path) = self.screenshot_out.clone() {
@@ -805,6 +1119,39 @@ impl eframe::App for ViewerApp {
         } else {
             0.0
         };
+
+        if self.alarm.state.triggered {
+            egui::TopBottomPanel::top("alarm_banner").show(ctx, |ui| {
+                ui.add_space(2.0 + dead_band);
+                let flash = (now * 2.5).fract() > 0.5;
+                let bg = if flash {
+                    egui::Color32::from_rgb(180, 20, 20)
+                } else {
+                    egui::Color32::from_rgb(200, 80, 0)
+                };
+                egui::Frame::new()
+                    .fill(bg)
+                    .inner_margin(egui::Margin::symmetric(12, 6))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("⚠️ {}", self.alarm.state.message))
+                                    .color(egui::Color32::WHITE)
+                                    .strong()
+                                    .size(13.0),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let mut audio_on = self.alarm.config.audio_enabled;
+                                if ui.checkbox(&mut audio_on, "Audio alert").changed() {
+                                    self.alarm.config.audio_enabled = audio_on;
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(2.0);
+            });
+        }
 
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.add_space(4.0 + dead_band);
@@ -947,20 +1294,115 @@ impl eframe::App for ViewerApp {
                     self.request_png(ctx);
                 }
 
+                if ui
+                    .button("Snapshot (S)")
+                    .on_hover_text("Quickly save timestamped snapshot to captures/ folder")
+                    .clicked()
+                {
+                    self.quick_snapshot(ctx);
+                }
+
+                if ui
+                    .button("Open...")
+                    .on_hover_text("Open saved offline capture (.json or .csv)")
+                    .clicked()
+                {
+                    self.open_capture();
+                }
+
+                if !self.datalogger.is_logging() {
+                    if ui
+                        .button("Record")
+                        .on_hover_text("Start continuous CSV & JSONL logging to captures/")
+                        .clicked()
+                    {
+                        let stamp = crate::timestamp::CaptureTime::host_now().filename_stamp();
+                        let dir = PathBuf::from("captures");
+                        let csv_path = dir.join(format!("datalog-{stamp}.csv"));
+                        let json_path = dir.join(format!("datalog-{stamp}.jsonl"));
+                        if let Err(e) = self.datalogger.start(Some(csv_path.clone()), Some(json_path.clone())) {
+                            self.status = format!("Failed to start logging: {e}");
+                        } else {
+                            self.status = format!("Logging to {}", csv_path.display());
+                        }
+                    }
+                } else {
+                    let elapsed = self.datalogger.elapsed_secs();
+                    let mins = (elapsed / 60.0) as u32;
+                    let secs = (elapsed % 60.0) as u32;
+                    let label = format!("⏹ REC ({mins:02}:{secs:02}, {} pts)", self.datalogger.sample_count());
+                    let color = if (now * 2.0).fract() > 0.5 {
+                        egui::Color32::from_rgb(255, 60, 60)
+                    } else {
+                        egui::Color32::from_rgb(180, 0, 0)
+                    };
+                    if ui.button(egui::RichText::new(label).color(color).strong()).clicked() {
+                        self.datalogger.stop();
+                        self.status = "Logging stopped.".into();
+                    }
+                }
+
+                ui.separator();
+                ui.checkbox(&mut self.markers.peak_tracking_enabled, "Peaks (P)")
+                    .on_hover_text("Track maximum and minimum peaks (PK+ / PK-)");
+
+                if ui
+                    .selectable_label(self.waterfall.is_active, "3D Waterfall (W)")
+                    .on_hover_text("Toggle 3D spectrogram / waterfall history view")
+                    .clicked()
+                {
+                    self.waterfall.is_active = !self.waterfall.is_active;
+                }
+
+                if ui
+                    .button("Limits")
+                    .on_hover_text("Configure Limit Alarms & Audio Alerts")
+                    .clicked()
+                {
+                    self.show_alarm_panel = !self.show_alarm_panel;
+                }
+
+                if ui
+                    .button("? Shortcuts (H)")
+                    .on_hover_text("Open keyboard shortcuts cheat sheet")
+                    .clicked()
+                {
+                    self.show_shortcuts_modal = !self.show_shortcuts_modal;
+                }
+
                 if self.pending {
                     ui.spinner();
                 }
             });
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label("View");
-                if ui
-                    .selectable_label(self.auto_fit, "Autoscale")
-                    .on_hover_text("Refit both axes to the data on every capture")
-                    .clicked()
-                {
-                    self.auto_fit = !self.auto_fit;
-                }
+            if self.waterfall.is_active {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("3D Controls:");
+                    if ui.button("⬅ 2D Plot").clicked() {
+                        self.waterfall.is_active = false;
+                    }
+                    if ui.button("Reset View").clicked() {
+                        self.waterfall.reset_view();
+                    }
+                    if ui.button(format!("Palette: {}", self.waterfall.palette.name())).clicked() {
+                        self.waterfall.palette = self.waterfall.palette.next();
+                    }
+                    if ui.button("Clear History").clicked() {
+                        self.waterfall.clear();
+                    }
+                    ui.separator();
+                    ui.label("Rotate: Drag | Pan: Ctrl/Right-Drag | Zoom: Wheel");
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("View");
+                    if ui
+                        .selectable_label(self.auto_fit, "Autoscale")
+                        .on_hover_text("Refit both axes to the data on every capture")
+                        .clicked()
+                    {
+                        self.auto_fit = !self.auto_fit;
+                    }
                 if ui.button("Fit now").clicked() {
                     self.fit_request = true;
                 }
@@ -1011,6 +1453,7 @@ impl eframe::App for ViewerApp {
                 }
                 ui.label("Drag pans · right-drag box-zooms");
             });
+            }
 
             ui.label(&self.status);
             ui.add_space(4.0);
@@ -1020,6 +1463,10 @@ impl eframe::App for ViewerApp {
         self.show_measurements(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.waterfall.is_active {
+                self.waterfall.show(ui);
+                return;
+            }
             let supply = self.is_supply();
             if supply {
                 self.show_supply_phosphor(ui);
@@ -1143,6 +1590,20 @@ impl eframe::App for ViewerApp {
                         plot_ui.vline(VLine::new("B", t));
                     }
                 }
+                if self.markers.peak_tracking_enabled {
+                    for trace in &self.traces {
+                        let peaks = crate::markers::TracePeaks::find(trace);
+                        if let Some(max) = &peaks.max {
+                            plot_ui.vline(VLine::new(format!("▲ PK+ {}", trace.channel), max.x));
+                        }
+                        if let Some(min) = &peaks.min {
+                            plot_ui.vline(VLine::new(format!("▼ PK- {}", trace.channel), min.x));
+                        }
+                    }
+                }
+                for m in self.markers.markers() {
+                    plot_ui.vline(VLine::new(format!("M{}", m.id), m.x));
+                }
 
                 if do_fit {
                     plot_ui.set_auto_bounds(true);
@@ -1176,6 +1637,38 @@ impl eframe::App for ViewerApp {
                 }
             }
         });
+
+        if self.show_alarm_panel {
+            egui::Window::new("⚙ Limit Alarms & Tolerance")
+                .open(&mut self.show_alarm_panel)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.checkbox(&mut self.alarm.config.enabled, "Enable Limit Alarms");
+                    ui.separator();
+                    egui::ComboBox::from_label("Monitored Source")
+                        .selected_text(self.alarm.config.source.display_name())
+                        .show_ui(ui, |ui| {
+                            for src in crate::alarm::AlarmSource::ALL {
+                                ui.selectable_value(&mut self.alarm.config.source, *src, src.display_name());
+                            }
+                        });
+                    ui.checkbox(&mut self.alarm.config.high_enabled, "High Limit");
+                    if self.alarm.config.high_enabled {
+                        ui.add(egui::DragValue::new(&mut self.alarm.config.high_threshold).speed(0.1));
+                    }
+                    ui.checkbox(&mut self.alarm.config.low_enabled, "Low Limit");
+                    if self.alarm.config.low_enabled {
+                        ui.add(egui::DragValue::new(&mut self.alarm.config.low_threshold).speed(0.1));
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Hysteresis");
+                        ui.add(egui::DragValue::new(&mut self.alarm.config.hysteresis).speed(0.01).range(0.0..=10.0));
+                    });
+                    ui.checkbox(&mut self.alarm.config.audio_enabled, "Synthesized Audio Beep (Rodio)");
+                });
+        }
+
+        crate::shortcuts::show_shortcuts_window(ctx, &mut self.show_shortcuts_modal);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

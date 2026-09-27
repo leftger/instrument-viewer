@@ -5,8 +5,33 @@
 **Connect**, then **Fetch**, tick **Auto**, or **Sequence** (arm one acquisition,
 wait for it to complete, then pull the curve). **CSV** / **JSON** / **PNG**
 save the traces already on the plot (JSON includes measurements and a settings
-snapshot; **Wide** writes `t,CH1,CH2,…`). **Cursors**: left-click sets A, right-click
-or Shift-click sets B; the bar under the plot shows Δt and 1/Δt.
+snapshot; **Wide** writes `t,CH1,CH2,…`).
+
+- **Snapshot (`S`)**: One-click instant save of timestamped PNG and CSV capture to `captures/` without modal prompts.
+- **Open...**: Replay and analyze previously exported `.json` or `.csv` captures offline without physical hardware attached.
+- **Record / Stop REC**: Continuous live datalogger streaming multi-channel measurements (DMM, DAQ, PSU V/I/W, Scope Pk-Pk/Freq) to `.csv` and `.jsonl` files in `captures/`.
+- **Peaks (`P`)**: Real-time automatic peak tracking for spectrum analyzers and scopes, marking global maximum (`▲ PK+`) and minimum (`▼ PK-`).
+- **3D Waterfall (`W` / `3`)**: Switches between 2D plot and 3D spectrogram waterfall history with mouse rotate, pan, zoom, and palette cycling.
+- **Limits**: Configurable high/low threshold limit alarms with hysteresis, visual flashing alert banner, and multi-tone audio chime.
+- **Cursors (`C`)**: Left-click sets A, right-click or Shift-click sets B; the bar under the plot shows Δt, 1/Δt, and **+ Pin Marker** to save persistent measurement points (up to 10).
+- **(?) Shortcuts (`H` / `?`)**: Opens interactive keyboard shortcuts cheat sheet modal.
+
+## Keyboard Shortcuts
+
+| Shortcut | Description |
+|:---:|:---|
+| <kbd>Space</kbd> | Run / Stop acquisition, or Pause / Resume Auto mode |
+| <kbd>A</kbd> | Toggle automatic periodic capture (Auto) |
+| <kbd>F</kbd> | Fit now (autoscale plot axes) |
+| <kbd>S</kbd> | Quick Snapshot (save timestamped capture directly to disk) |
+| <kbd>C</kbd> / <kbd>K</kbd> | Toggle measurement Cursors (A and B) |
+| <kbd>P</kbd> | Toggle automatic Peak Tracking (`PK+` and `PK-` markers) |
+| <kbd>L</kbd> | Toggle Stacked Lanes view (per-channel dedicated bands) |
+| <kbd>W</kbd> / <kbd>3</kbd> | Toggle 3D Waterfall / Spectrogram history view |
+| <kbd>R</kbd> | Refresh front-panel configuration from instrument |
+| <kbd>D</kbd> | Delete nearest pinned measurement marker |
+| <kbd>Esc</kbd> | Clear pinned markers or close dialog modals |
+| <kbd>H</kbd> / <kbd>?</kbd> | Toggle Keyboard Shortcuts cheat sheet modal |
 
 ## View controls
 
